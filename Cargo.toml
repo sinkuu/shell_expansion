@@ -1,0 +1,6 @@
+[package]
+name = "shell_expansion"
+version = "0.1.0"
+authors = ["sinkuu <sinkuupump@gmail.com>"]
+
+[dependencies]
