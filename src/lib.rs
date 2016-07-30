@@ -3,11 +3,16 @@
 
 use std::collections::HashMap;
 
+mod glob;
+
+use glob::{Pattern, MatchLength, MatchPosition};
+
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
 pub enum ExpanderError {
     ClosingBracketNotFound,
     VariableNotFound,
     UnknownEscapeSequence,
+    GlobError,
     UnknownPattern,
 }
 
@@ -106,6 +111,42 @@ pub fn expand(mut s: &str, vars: &mut HashMap<String, String>) -> Result<String,
                             }
                         } else {
                             return Err(ExpanderError::UnknownPattern);
+                        }
+                    } else if let Some(idx) = inner.find(|c: char| ['#', '%'].contains(&c)) {
+                        let var = if let Some(v) = vars.get(&inner[..idx]) {
+                            v
+                        } else {
+                            continue 'outer;
+                        };
+
+                        let inner = &inner[idx..];
+
+                        let (pat, len, pos) = if inner.starts_with("##") {
+                            (&inner[2..], MatchLength::Longest, MatchPosition::Prefix)
+                        } else if inner.starts_with('#') {
+                            (&inner[1..], MatchLength::Shortest, MatchPosition::Prefix)
+                        } else if inner.starts_with("%%") {
+                            (&inner[2..], MatchLength::Longest, MatchPosition::Suffix)
+                        } else if inner.starts_with('%') {
+                            (&inner[1..], MatchLength::Shortest, MatchPosition::Suffix)
+                        } else {
+                            return Err(ExpanderError::UnknownPattern);
+                        };
+                        let pat = try!(Pattern::new(pat)
+                            .or_else(|_| Err(ExpanderError::GlobError)));
+
+                        if let Some(i) = pat.matches(len, pos, var) {
+                            match pos {
+                                MatchPosition::Prefix => {
+                                    res.push_str(&var[i..]);
+                                }
+
+                                MatchPosition::Suffix => {
+                                    res.push_str(&var[..var.len() - i]);
+                                }
+                            }
+                        } else {
+                            res.push_str(var);
                         }
                     } else {
                         if inner.chars().all(|c| c.is_alphanumeric()) {
