@@ -1,15 +1,16 @@
 //! See http://pubs.opengroup.org/onlinepubs/009604499/utilities/xcu_chap02.html#tag_02_06_02
 //! for POSIX specifications of shell parameter expansion.
 
-#[derive(Debug, Copy, Clone)]
+use std::collections::HashMap;
+
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
 pub enum ExpanderError {
     ClosingBracketNotFound,
     VariableNotFound,
     UnknownEscapeSequence,
 }
 
-
-pub fn expand<GF: Fn(&str) -> Option<&str>>(mut s: &str, get: GF) -> Result<String, ExpanderError> {
+pub fn expand(mut s: &str, vars: &mut HashMap<String, String>) -> Result<String, ExpanderError> {
     let mut res = String::with_capacity(s.len());
 
     'outer: while !s.is_empty() {
@@ -54,25 +55,59 @@ pub fn expand<GF: Fn(&str) -> Option<&str>>(mut s: &str, get: GF) -> Result<Stri
                         }
                     }
 
-                    let inner = &s[0..closing].replace("\\}", "}");
+                    let inner = (&s[0..closing]).replace("\\}", "}");
                     s = &s[closing + 1..];
 
                     if inner.starts_with('#') {
                         let var = &inner[1..];
 
-                        match get(var) {
+                        match vars.get(var) {
                             Some(v) => res.push_str(&v.chars().count().to_string()),
                             None => {
                                 return Err(ExpanderError::VariableNotFound);
                             }
                         };
-                    } else {
-                        match get(inner) {
-                            Some(v) => res.push_str(v),
-                            None => {
-                                return Err(ExpanderError::VariableNotFound);
-                            }
+                    } else if let Some(idx) =
+                                  inner.find(|c: char| [':', '-', '+', '?'].contains(&c)) {
+                        let varname = &inner[..idx];
+
+                        let opt = &inner[idx..];
+                        // ignoreing ':'
+                        let opt = if opt.starts_with(':') {
+                            &inner[idx + 1..]
+                        } else {
+                            opt
                         };
+
+                        if opt.starts_with('-') {
+                            // use default value
+                            match vars.get(varname) {
+                                Some(v) => res.push_str(v),
+                                None => res.push_str(&opt[1..]),
+                            }
+                        } else if opt.starts_with('=') {
+                            // assign default value
+                            res.push_str(vars.entry(varname.to_string())
+                                .or_insert((&opt[1..]).to_string()));
+                        } else if opt.starts_with('+') {
+                            // use alternative value
+                            match vars.get(varname) {
+                                Some(_) => (),
+                                None => res.push_str(&inner[idx + 2..]),
+                            }
+                        } else if opt.starts_with('?') {
+                            // indicate error if unset
+                            match vars.get(varname) {
+                                Some(v) => res.push_str(v),
+                                None => {
+                                    return Err(ExpanderError::VariableNotFound);
+                                }
+                            }
+                        }
+                    } else {
+                        if let Some(v) = vars.get(inner.as_str()) {
+                            res.push_str(v);
+                        }
                     }
                 } else {
                     let put_len = if s.starts_with('#') {
@@ -92,14 +127,12 @@ pub fn expand<GF: Fn(&str) -> Option<&str>>(mut s: &str, get: GF) -> Result<Stri
                         continue;
                     }
 
-                    if let Some(v) = get(&s[0..e]) {
+                    if let Some(v) = vars.get(&s[0..e]) {
                         if put_len {
                             res.push_str(&v.chars().count().to_string());
                         } else {
                             res.push_str(v);
                         }
-                    } else {
-                        return Err(ExpanderError::VariableNotFound);
                     }
 
                     s = &s[e..];
@@ -113,26 +146,37 @@ pub fn expand<GF: Fn(&str) -> Option<&str>>(mut s: &str, get: GF) -> Result<Stri
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashMap;
+
     #[test]
     fn it_works() {
-        let e = super::expand("/path/1 $HOME/foo\\$bar ${a\\}b} ${soumen\\}tabe\\}tai\\}}",
-                              |v| {
-            match v {
-                "HOME" => Some("/home/blah"),
-                "a}b" => Some("/path/2"),
-                "soumen}tabe}tai}" => Some("/path/3"),
-                _ => None,
-            }
-        });
-        assert_eq!(e.unwrap(), "/path/1 /home/blah/foo$bar /path/2 /path/3");
+        let mut vars = HashMap::new();
+        vars.insert("HOME".to_string(), "/home/blah".to_string());
+        vars.insert("a}b".to_string(), "/path/1".to_string());
+        vars.insert("soumen}tabe}tai}".to_string(), "/path/2".to_string());
+
+        let e = super::expand("/$nonexistent $HOME/foo\\$bar ${a\\}b} ${soumen\\}tabe\\}tai\\}}",
+                              &mut vars);
+        assert_eq!(e.unwrap(), "/ /home/blah/foo$bar /path/1 /path/2");
+
+        vars.insert("var".to_string(), "1234５６７８".to_string());
 
         let e = super::expand("var is ${#var} chars long, yes, var is $#var chars long",
-                              |v| {
-                                  match v {
-                                      "var" => Some("1234５６７８"),
-                                      _ => None,
-                                  }
-                              });
+                              &mut vars);
         assert_eq!(e.unwrap(), "var is 8 chars long, yes, var is 8 chars long")
+    }
+
+    #[test]
+    fn test_default() {
+        let mut vars = HashMap::new();
+        vars.insert("foo".to_string(), "value".to_string());
+
+        let e = super::expand("${foo:-no} ${bar:-substituted} ${baz:=assign}", &mut vars);
+        assert!(!vars.contains_key("bar"));
+        assert_eq!(e.unwrap(), "value substituted assign");
+        assert_eq!(vars.get("baz").unwrap(), "assign");
+
+        let e = super::expand("${qux:?}", &mut vars);
+        assert_eq!(e, Err(super::ExpanderError::VariableNotFound));
     }
 }
