@@ -179,4 +179,16 @@ mod tests {
         let e = super::expand("${qux:?}", &mut vars);
         assert_eq!(e, Err(super::ExpanderError::VariableNotFound));
     }
+
+    #[test]
+    fn test_match() {
+        let mut vars = HashMap::new();
+        vars.insert("foo".to_string(), "***_***".to_string());
+
+        let e = super::expand(r#"${foo#*}/${foo##*}/${foo#"*"}/${foo##"*"}"#, &mut vars);
+        assert_eq!(e.unwrap(), "//**_***/_***");
+
+        let e = super::expand(r#"${foo%*}/${foo%%*}/${foo%"*"}/${foo%%"*"}"#, &mut vars);
+        assert_eq!(e.unwrap(), "//***_**/***_");
+    }
 }
