@@ -1,3 +1,6 @@
+//! See http://pubs.opengroup.org/onlinepubs/009604499/utilities/xcu_chap02.html#tag_02_06_02
+//! for POSIX specifications of shell parameter expansion.
+
 #[derive(Debug, Copy, Clone)]
 pub enum ExpanderError {
     ClosingBracketNotFound,
@@ -52,14 +55,33 @@ pub fn expand<GF: Fn(&str) -> Option<&str>>(mut s: &str, get: GF) -> Result<Stri
                     }
 
                     let inner = &s[0..closing].replace("\\}", "}");
-                    match get(inner) {
-                        Some(v) => res.push_str(v),
-                        None => {
-                            return Err(ExpanderError::VariableNotFound);
-                        }
-                    };
                     s = &s[closing + 1..];
+
+                    if inner.starts_with('#') {
+                        let var = &inner[1..];
+
+                        match get(var) {
+                            Some(v) => res.push_str(&v.chars().count().to_string()),
+                            None => {
+                                return Err(ExpanderError::VariableNotFound);
+                            }
+                        };
+                    } else {
+                        match get(inner) {
+                            Some(v) => res.push_str(v),
+                            None => {
+                                return Err(ExpanderError::VariableNotFound);
+                            }
+                        };
+                    }
                 } else {
+                    let put_len = if s.starts_with('#') {
+                        s = &s[1..];
+                        true
+                    } else {
+                        false
+                    };
+
                     let e = match s.find(|c: char| !c.is_alphanumeric()) {
                         Some(e) => e,
                         None => s.len(),
@@ -71,7 +93,11 @@ pub fn expand<GF: Fn(&str) -> Option<&str>>(mut s: &str, get: GF) -> Result<Stri
                     }
 
                     if let Some(v) = get(&s[0..e]) {
-                        res.push_str(v);
+                        if put_len {
+                            res.push_str(&v.chars().count().to_string());
+                        } else {
+                            res.push_str(v);
+                        }
                     } else {
                         return Err(ExpanderError::VariableNotFound);
                     }
@@ -89,15 +115,24 @@ pub fn expand<GF: Fn(&str) -> Option<&str>>(mut s: &str, get: GF) -> Result<Stri
 mod tests {
     #[test]
     fn it_works() {
-        let e = super::expand("/path/1 $HOME/foo\\$bar ${hoge} ${soumen\\}tabe\\}tai\\}}",
+        let e = super::expand("/path/1 $HOME/foo\\$bar ${a\\}b} ${soumen\\}tabe\\}tai\\}}",
                               |v| {
             match v {
                 "HOME" => Some("/home/blah"),
-                "hoge" => Some("/path/2"),
+                "a}b" => Some("/path/2"),
                 "soumen}tabe}tai}" => Some("/path/3"),
                 _ => None,
             }
         });
         assert_eq!(e.unwrap(), "/path/1 /home/blah/foo$bar /path/2 /path/3");
+
+        let e = super::expand("var is ${#var} chars long, yes, var is $#var chars long",
+                              |v| {
+                                  match v {
+                                      "var" => Some("1234５６７８"),
+                                      _ => None,
+                                  }
+                              });
+        assert_eq!(e.unwrap(), "var is 8 chars long, yes, var is 8 chars long")
     }
 }
