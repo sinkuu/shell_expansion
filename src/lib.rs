@@ -8,6 +8,7 @@ pub enum ExpanderError {
     ClosingBracketNotFound,
     VariableNotFound,
     UnknownEscapeSequence,
+    UnknownPattern,
 }
 
 pub fn expand(mut s: &str, vars: &mut HashMap<String, String>) -> Result<String, ExpanderError> {
@@ -103,10 +104,16 @@ pub fn expand(mut s: &str, vars: &mut HashMap<String, String>) -> Result<String,
                                     return Err(ExpanderError::VariableNotFound);
                                 }
                             }
+                        } else {
+                            return Err(ExpanderError::UnknownPattern);
                         }
                     } else {
-                        if let Some(v) = vars.get(inner.as_str()) {
-                            res.push_str(v);
+                        if inner.chars().all(|c| c.is_alphanumeric()) {
+                            if let Some(v) = vars.get(inner.as_str()) {
+                                res.push_str(v);
+                            }
+                        } else {
+                            return Err(ExpanderError::UnknownPattern);
                         }
                     }
                 } else {
@@ -152,12 +159,9 @@ mod tests {
     fn it_works() {
         let mut vars = HashMap::new();
         vars.insert("HOME".to_string(), "/home/blah".to_string());
-        vars.insert("a}b".to_string(), "/path/1".to_string());
-        vars.insert("soumen}tabe}tai}".to_string(), "/path/2".to_string());
 
-        let e = super::expand("/$nonexistent $HOME/foo\\$bar ${a\\}b} ${soumen\\}tabe\\}tai\\}}",
-                              &mut vars);
-        assert_eq!(e.unwrap(), "/ /home/blah/foo$bar /path/1 /path/2");
+        let e = super::expand("/$nonexistent $HOME/foo\\$bar", &mut vars);
+        assert_eq!(e.unwrap(), "/ /home/blah/foo$bar");
 
         vars.insert("var".to_string(), "1234５６７８".to_string());
 
@@ -170,6 +174,9 @@ mod tests {
     fn test_default() {
         let mut vars = HashMap::new();
         vars.insert("foo".to_string(), "value".to_string());
+
+        let e = super::expand("${bar:-a\\}b}/${bar:-c\\}}", &mut vars);
+        assert_eq!(e.unwrap(), "a}b/c}");
 
         let e = super::expand("${foo:-no} ${bar:-substituted} ${baz:=assign}", &mut vars);
         assert!(!vars.contains_key("bar"));
