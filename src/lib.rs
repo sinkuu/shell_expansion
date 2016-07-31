@@ -82,7 +82,7 @@ impl Expander {
                             return Err(ExpanderError::ClosingBracketNotFound);
                         };
 
-                        let mut rem = s.char_indices();
+                        let mut rem = s.char_indices().peekable();
                         let mut level = 1;
                         while level > 0 {
                             match rem.next() {
@@ -94,6 +94,14 @@ impl Expander {
                                     match rem.next() {
                                         None => return Err(ExpanderError::ClosingBracketNotFound),
                                         Some((_, '}')) => (),
+                                        Some((_, '$')) => {
+                                            match rem.peek() {
+                                                Some(&(_, '}')) | None => (),
+                                                Some(&(_, _)) => {
+                                                    rem.next().unwrap();
+                                                }
+                                            }
+                                        }
                                         Some(_) => return Err(ExpanderError::UnknownEscapeSequence),
                                     }
                                 }
@@ -326,7 +334,10 @@ mod tests {
 
         let e = Expander::new("num is ${#num} chars long, num is $#num chars long!").unwrap();
         assert_eq!(e.expand(&mut params).unwrap(),
-                   "num is 8 chars long, num is 8 chars long!")
+                   "num is 8 chars long, num is 8 chars long!");
+
+       let e = Expander::new(r#"${nonexistent-\}\${}"#).unwrap();
+       assert_eq!(e.expand(&mut params).unwrap(), "}${");
     }
 
     #[test]
