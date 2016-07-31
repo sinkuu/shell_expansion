@@ -269,9 +269,17 @@ mod tests {
     fn it_works() {
         let mut params = HashMap::new();
         params.insert("HOME".to_string(), "/home/blah".to_string());
+        params.insert("file".to_string(), "example.c".to_string());
+
 
         let e = Expander::new("/$nonexistent $HOME/foo\\$bar").unwrap();
         assert_eq!(e.expand(&mut params).unwrap(), "/ /home/blah/foo$bar");
+
+        let e = Expander::new("${file%.c}.rs").unwrap();
+        assert_eq!(e.expand(&mut params).unwrap(), "example.rs");
+
+        let e = Expander::new("test.${file##*.}").unwrap();
+        assert_eq!(e.expand(&mut params).unwrap(), "test.c");
 
         params.insert("num".to_string(), "1234５６７８".to_string());
 

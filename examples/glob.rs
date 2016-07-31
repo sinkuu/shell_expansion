@@ -10,6 +10,6 @@ fn main() {
     let e = Expander::new("${file%.c}.rs").unwrap();
     assert_eq!(e.expand(&mut params).unwrap(), "example.rs");
 
-    let e = Expander::new("${file%%*.c}test.rs").unwrap();
-    assert_eq!(e.expand(&mut params).unwrap(), "test.rs");
+    let e = Expander::new("test.${file##*.}").unwrap();
+    assert_eq!(e.expand(&mut params).unwrap(), "test.c");
 }
