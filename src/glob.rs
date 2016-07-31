@@ -1,20 +1,31 @@
-// FIXME: remove this
-#![allow(dead_code)]
-
-use std::cmp::{Eq, PartialEq};
-
 #[derive(Debug, Copy, Clone)]
-pub struct PatternError;
+pub enum GlobError {
+    UnknownEscapeSequence,
+    StrayBracket,
+}
 
-#[derive(Debug, Clone)]
-pub struct Pattern(Vec<Matcher>);
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Pattern {
+    len: MatchLength,
+    pos: MatchPosition,
+    matchers: Vec<Matcher>,
+}
 
 impl Pattern {
-    pub fn new(pattern: &str) -> Result<Pattern, PatternError> {
-        Ok(Pattern(try!(Pattern::parse(pattern))))
+    pub fn new(pattern: &str, len: MatchLength, pos: MatchPosition) -> Result<Pattern, GlobError> {
+        let mut m = try!(Pattern::parse(pattern));
+        if pos == MatchPosition::Suffix {
+            m = m.into_iter().map(|x| x.reverse()).rev().collect();
+        }
+
+        Ok(Pattern {
+            len: len,
+            pos: pos,
+            matchers: m,
+        })
     }
 
-    fn parse(pattern: &str) -> Result<Vec<Matcher>, PatternError> {
+    fn parse(pattern: &str) -> Result<Vec<Matcher>, GlobError> {
         let mut matchers = vec![];
 
         let mut m = Matcher::Nop;
@@ -32,7 +43,7 @@ impl Pattern {
                     'bracket: loop {
                         match cs.next() {
                             None => {
-                                return Err(PatternError);
+                                return Err(GlobError::StrayBracket);
                             }
 
                             Some(']') => {
@@ -51,7 +62,7 @@ impl Pattern {
                                     Some('\\') => inner.push('\\'),
                                     Some(c) => inner.push(c),
                                     None => {
-                                        return Err(PatternError);
+                                        return Err(GlobError::UnknownEscapeSequence);
                                     }
                                 }
                             }
@@ -101,7 +112,7 @@ impl Pattern {
                                     new_m
                                 }
 
-                                _ => return Err(PatternError),
+                                _ => return Err(GlobError::UnknownEscapeSequence),
                             }
                         }
                     }
@@ -119,9 +130,189 @@ impl Pattern {
         }
     }
 
-    pub fn matches(&self, len: MatchLength, pos: MatchPosition, s: &str) -> Option<usize> {
-        unimplemented!()
+    pub fn matches(&self, string: &str) -> Option<usize> {
+        match (self.matchers.len(), string.len()) {
+            (n, 0) => {
+                if n == 1 && self.matchers[0].is_many() {
+                    return Some(0);
+                } else {
+                    return None;
+                }
+            }
+            (0, _) => return None,
+            (1, _) => {
+                if self.matchers[0] == Matcher::Nop {
+                    return None;
+                }
+            }
+            _ => (),
+        };
+
+        debug_assert!(string.len() != 0);
+
+        let chars: Vec<char> = match self.pos {
+            MatchPosition::Prefix => string.chars().collect(),
+            MatchPosition::Suffix => string.chars().rev().collect(),
+        };
+
+        let mut str = String::new();
+        for &c in &chars {
+            str.push(c);
+        }
+
+        let num_many = self.matchers.iter().filter(|&m| m == &Matcher::ManyChar).count();
+
+        match self.len {
+                MatchLength::Longest => {
+                    (0..chars.len() + 1)
+                        .rev()
+                        .filter_map(|i| {
+                            search_matches(&self.matchers, num_many, i, self.len, &chars)
+                        })
+                        .next()
+                }
+
+                MatchLength::Shortest => {
+                    (0..chars.len() + 1)
+                        .filter_map(|i| {
+                            search_matches(&self.matchers, num_many, i, self.len, &chars)
+                        })
+                        .next()
+                }
+            }
+            .map(|l| {
+                (&chars[..l])
+                    .iter()
+                    .map(|c| c.len_utf8())
+                    .fold(0, |acc, x| acc + x)
+
+            })
     }
+}
+
+fn search_matches(matchers: &[Matcher],
+                  num_many: usize,
+                  span: usize,
+                  matchlen: MatchLength,
+                  input: &[char])
+                  -> Option<usize> {
+    let def_n = match matchlen {
+        MatchLength::Longest => input.len(),
+        MatchLength::Shortest => 0,
+    };
+
+    let (matched, matched_many, len_matched) = matches_with_spans(matchers, &[span], def_n, input);
+
+    debug_assert!(matched_many <= num_many);
+
+    if matched == matchers.len() {
+        debug_assert!(num_many == matched_many);
+        Some(len_matched)
+    } else if matched == 0 || num_many == 0 {
+        None
+    } else {
+        match matchlen {
+            MatchLength::Longest => {
+                (0..input.len() + 1)
+                    .rev()
+                    .filter_map(|i| {
+                        search_matches(&matchers[matched..],
+                                       num_many - if matched_many > 0 { 1 } else { 0 },
+                                       i,
+                                       matchlen,
+                                       &input[len_matched..])
+                    })
+                    .map(|len| len + len_matched)
+                    .next()
+            }
+
+            MatchLength::Shortest => {
+                (0..input.len() + 1)
+                    .filter_map(|i| {
+                        search_matches(&matchers[matched..],
+                                       num_many - if matched_many > 0 { 1 } else { 0 },
+                                       i,
+                                       matchlen,
+                                       &input[len_matched..])
+                    })
+                    .map(|len| len + len_matched)
+                    .next()
+            }
+        }
+    }
+}
+
+fn matches_with_spans(matchers: &[Matcher],
+                      many_ns: &[usize],
+                      many_default_n: usize,
+                      input: &[char])
+                      -> (usize, usize, usize) {
+    let mut nmany = 0;
+    let mut len_matched = 0;
+
+    let mut input = &input[..];
+
+    let mut ms = matchers.iter().enumerate();
+    while !input.is_empty() {
+        match ms.next() {
+            None => return (matchers.len(), nmany, len_matched),
+
+            Some((i, m)) => {
+                match *m {
+                    Matcher::Nop => (),
+
+                    Matcher::Char(c) => {
+                        if !input.is_empty() && input[0] == c {
+                            len_matched += 1;
+                            input = &input[1..];
+                        } else {
+                            return (i, nmany, len_matched);
+                        }
+                    }
+
+                    Matcher::Str(ref sm) => {
+                        if input.starts_with(sm) {
+                            len_matched += sm.len();
+                            input = &input[sm.len()..];
+                        } else {
+                            return (i, nmany, len_matched);
+                        }
+                    }
+
+                    Matcher::AnyChar => {
+                        if !input.is_empty() {
+                            len_matched += 1;
+                            input = &input[1..];
+                        } else {
+                            return (i, nmany, len_matched);
+                        }
+                    }
+
+                    Matcher::Group(ref gm) => {
+                        if !input.is_empty() && gm.matches(input[0]) {
+                            len_matched += 1;
+                            input = &input[1..];
+                        } else {
+                            return (i, nmany, len_matched);
+                        }
+                    }
+
+                    Matcher::ManyChar => {
+                        let nm = many_ns.get(nmany).cloned().unwrap_or(many_default_n);
+                        if input.len() >= nm {
+                            len_matched += nm;
+                            nmany += 1;
+                            input = &input[nm..];
+                        } else {
+                            return (i, nmany, len_matched);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    (matchers.len() - ms.count(), nmany, len_matched)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -135,15 +326,6 @@ pub enum MatchPosition {
     Prefix,
     Suffix,
 }
-
-impl PartialEq<Pattern> for Pattern {
-    #[inline]
-    fn eq(&self, other: &Pattern) -> bool {
-        self.0 == other.0
-    }
-}
-
-impl Eq for Pattern {}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct GroupMatcher {
@@ -198,8 +380,8 @@ impl GroupMatcher {
         }
     }
 
-    fn match_char(&self, input: char) -> bool {
-        for v in self.target.iter() {
+    fn matches(&self, input: char) -> bool {
+        for v in &self.target {
             match *v {
                 GroupMatcherTarget::Char(c) => {
                     if c == input {
@@ -225,10 +407,10 @@ enum GroupMatcherTarget {
     CharBetween(char, char),
 }
 
-#[derive(Debug, Clone, Eq, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 enum Matcher {
     Nop,
-    Str(String),
+    Str(Vec<char>),
     Char(char),
     Group(GroupMatcher),
     AnyChar,
@@ -236,13 +418,31 @@ enum Matcher {
 }
 
 impl Matcher {
+    #[inline]
+    fn is_many(&self) -> bool {
+        match *self {
+            Matcher::ManyChar => true,
+            _ => false,
+        }
+    }
+
+    fn reverse(self) -> Matcher {
+        match self {
+            Matcher::Str(mut s) => {
+                s.reverse();
+                Matcher::Str(s)
+            }
+            _ => self,
+        }
+    }
+
     fn combine_seq(self, other: Matcher) -> (Matcher, Option<Matcher>) {
         match (self, other) {
             (Matcher::Nop, other) => (other, None),
 
-            (Matcher::Str(s1), Matcher::Str(s2)) => {
+            (Matcher::Str(s1), Matcher::Str(mut s2)) => {
                 let mut s1 = s1;
-                s1.push_str(&s2);
+                s1.append(&mut s2);
                 (Matcher::Str(s1), None)
             }
 
@@ -253,7 +453,7 @@ impl Matcher {
             }
 
             (Matcher::Char(c1), Matcher::Char(c2)) => {
-                let mut s = String::with_capacity(2);
+                let mut s = Vec::with_capacity(2);
                 s.push(c1);
                 s.push(c2);
                 (Matcher::Str(s), None)
@@ -269,23 +469,100 @@ impl Matcher {
 }
 
 #[cfg(test)]
-mod test {
+mod tests {
     use super::*;
+
+    fn assert_match_eq(glob: &str,
+                       len: MatchLength,
+                       pos: MatchPosition,
+                       s: &str,
+                       res: Option<usize>) {
+        assert_eq!(Pattern::new(glob, len, pos).unwrap().matches(s), res);
+    }
 
     #[test]
     fn test_pattern() {
-        assert_eq!(Pattern::new("a*b?c[feda-d]").unwrap(),
-                   Pattern::new("a**b?c[defa-d]").unwrap());
+        assert_eq!(Pattern::new("a*b?c[-f\\]eda-d]",
+                                MatchLength::Shortest,
+                                MatchPosition::Suffix)
+                       .unwrap(),
+                   Pattern::new("a**b?c[defa-d\\]-]",
+                                MatchLength::Shortest,
+                                MatchPosition::Suffix)
+                       .unwrap());
 
-        let p = Pattern::new("a*b?d[feda-d]").unwrap();
-        assert_eq!(p.matches(MatchLength::Shortest, MatchPosition::Prefix, "abcde"), Some(5));
+        let p = "";
+        assert_match_eq(p, MatchLength::Shortest, MatchPosition::Prefix, "abc", None);
+        assert_match_eq(p, MatchLength::Shortest, MatchPosition::Prefix, "", None);
+        let p = "a";
+        assert_match_eq(p, MatchLength::Shortest, MatchPosition::Prefix, "", None);
+        let p = "*";
+        assert_match_eq(p, MatchLength::Shortest, MatchPosition::Prefix, "", Some(0));
 
-        let p = super::Pattern::new("a*b").unwrap();
-        assert_eq!(p.matches(MatchLength::Shortest, MatchPosition::Prefix, "aababc"), Some(3));
-        assert_eq!(p.matches(MatchLength::Shortest, MatchPosition::Suffix, "aababc"), None);
-        assert_eq!(p.matches(MatchLength::Shortest, MatchPosition::Suffix, "aabab"), Some(2));
-        assert_eq!(p.matches(MatchLength::Longest, MatchPosition::Prefix, "aababc"), Some(5));
-        assert_eq!(p.matches(MatchLength::Longest, MatchPosition::Suffix, "aababc"), None);
-        assert_eq!(p.matches(MatchLength::Longest, MatchPosition::Suffix, "aabab"), Some(5));
+        let p = "a*b?d[feda-d]";
+        assert_match_eq(p,
+                        MatchLength::Shortest,
+                        MatchPosition::Prefix,
+                        "abcde",
+                        Some(5));
+        assert_match_eq(p,
+                        MatchLength::Longest,
+                        MatchPosition::Prefix,
+                        "abcde",
+                        Some(5));
+
+        let p = "a*b";
+        assert_match_eq(p,
+                        MatchLength::Shortest,
+                        MatchPosition::Prefix,
+                        "aababc",
+                        Some(3));
+        assert_match_eq(p,
+                        MatchLength::Shortest,
+                        MatchPosition::Suffix,
+                        "aababc",
+                        None);
+        assert_match_eq(p,
+                        MatchLength::Shortest,
+                        MatchPosition::Suffix,
+                        "aabab",
+                        Some(2));
+        assert_match_eq(p,
+                        MatchLength::Longest,
+                        MatchPosition::Prefix,
+                        "aababc",
+                        Some(5));
+        assert_match_eq(p,
+                        MatchLength::Longest,
+                        MatchPosition::Suffix,
+                        "aababc",
+                        None);
+        assert_match_eq(p,
+                        MatchLength::Longest,
+                        MatchPosition::Suffix,
+                        "aabab",
+                        Some(5));
+
+        let p = "a*b*c";
+        assert_match_eq(p,
+                        MatchLength::Shortest,
+                        MatchPosition::Prefix,
+                        "abbcabc",
+                        Some(4));
+        assert_match_eq(p,
+                        MatchLength::Longest,
+                        MatchPosition::Prefix,
+                        "abbcabc",
+                        Some(7));
+        assert_match_eq(p,
+                        MatchLength::Longest,
+                        MatchPosition::Prefix,
+                        "abcabcabcabcabcabc_",
+                        Some(18));
+        assert_match_eq(p,
+                        MatchLength::Longest,
+                        MatchPosition::Suffix,
+                        "_abcabcabcabcabcabc",
+                        Some(18));
     }
 }

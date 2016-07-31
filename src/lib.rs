@@ -1,5 +1,4 @@
-//! See http://pubs.opengroup.org/onlinepubs/009604499/utilities/xcu_chap02.html#tag_02_06_02
-//! for POSIX specifications of shell parameter expansion.
+//! Shell-like variable expansion.
 
 use std::collections::HashMap;
 
@@ -14,6 +13,12 @@ pub enum ExpanderError {
     UnknownEscapeSequence,
     GlobError,
     UnknownPattern,
+}
+
+impl From<glob::GlobError> for ExpanderError {
+    fn from(_: glob::GlobError) -> Self {
+        ExpanderError::GlobError
+    }
 }
 
 pub fn expand(mut s: &str, vars: &mut HashMap<String, String>) -> Result<String, ExpanderError> {
@@ -132,10 +137,9 @@ pub fn expand(mut s: &str, vars: &mut HashMap<String, String>) -> Result<String,
                         } else {
                             return Err(ExpanderError::UnknownPattern);
                         };
-                        let pat = try!(Pattern::new(pat)
-                            .or_else(|_| Err(ExpanderError::GlobError)));
+                        let pat = try!(Pattern::new(pat, len, pos));
 
-                        if let Some(i) = pat.matches(len, pos, var) {
+                        if let Some(i) = pat.matches(var) {
                             match pos {
                                 MatchPosition::Prefix => {
                                     res.push_str(&var[i..]);
@@ -229,14 +233,19 @@ mod tests {
     }
 
     #[test]
-    fn test_match() {
+    fn test_glob() {
         let mut vars = HashMap::new();
-        vars.insert("foo".to_string(), "***_***".to_string());
+        vars.insert("foo".to_string(), "x.blah.c".to_string());
+        vars.insert("path".to_string(), "foo/bar/baz".to_string());
 
-        let e = super::expand(r#"${foo#*}/${foo##*}/${foo#"*"}/${foo##"*"}"#, &mut vars);
-        assert_eq!(e.unwrap(), "//**_***/_***");
+        let e = super::expand(r#"${foo#x.*}/${foo##x.*}"#, &mut vars);
+        assert_eq!(e.unwrap(), "blah.c/");
 
-        let e = super::expand(r#"${foo%*}/${foo%%*}/${foo%"*"}/${foo%%"*"}"#, &mut vars);
-        assert_eq!(e.unwrap(), "//***_**/***_");
+        let e = super::expand(r#"${foo%*.c}/${foo%%*.c}"#, &mut vars);
+        assert_eq!(e.unwrap(), "x.blah/");
+
+
+        let e = super::expand(r#"${path%%/*}:${path##*/}"#, &mut vars);
+        assert_eq!(e.unwrap(), "foo:baz");
     }
 }
