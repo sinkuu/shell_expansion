@@ -1,4 +1,4 @@
-//! Shell-like variable expansion.
+//! Shell-like parameter expansion.
 
 use std::collections::HashMap;
 
@@ -21,231 +21,296 @@ impl From<glob::GlobError> for ExpanderError {
     }
 }
 
-pub fn expand(mut s: &str, vars: &mut HashMap<String, String>) -> Result<String, ExpanderError> {
-    let mut res = String::with_capacity(s.len());
 
-    'outer: while !s.is_empty() {
-        match (s.find("\\$"), s.find('$')) {
-            (_, None) => {
-                res.push_str(s);
-                break 'outer;
-            }
-            (escaped_dollar, Some(idx_dollar)) => {
-                if let Some(idx_escaped_dollar) = escaped_dollar {
-                    if idx_escaped_dollar + 1 == idx_dollar {
-                        res.push_str(&s[0..idx_escaped_dollar]);
-                        res.push('$');
-                        s = &s[idx_dollar + 1..];
-                        continue 'outer;
-                    }
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Format {
+    PlainStr(String),
+    PlainChar(char),
+    /// `${parameter}` or `$parameter`
+    Parameter(String),
+    /// `${parameter-word}`
+    UseDefaultValue(String, String),
+    /// `${parameter=word}`
+    AssignDefaultValue(String, String),
+    /// `${parameter?word}`
+    IndicateErrorIfUnset(String),
+    /// `${parameter+word}`
+    UseAlternativeValue(String, String),
+    /// `${#parameter}` or `$#parameter`
+    StringLength(String),
+    /// `${parameter%pat}`, `${parameter%%pat}`, `${parameter#pat}`, `${parameter##pat}`
+    RemovePattern(String, Pattern),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Expander {
+    formats: Vec<Format>,
+}
+
+impl Expander {
+    pub fn new(s: &str) -> Result<Expander, ExpanderError> {
+        let mut fmts = vec![];
+
+        let mut s = s;
+
+        'outer: while !s.is_empty() {
+            match (s.find("\\$"), s.find('$')) {
+                (_, None) => {
+                    fmts.push(Format::PlainStr(s.to_string()));
+                    break 'outer;
                 }
-
-                res.push_str(&s[0..idx_dollar]);
-                s = &s[idx_dollar + 1..];
-
-                if s.starts_with('{') {
-                    s = &s[1..];
-
-                    let mut closing = if let Some(c) = s.find('}') {
-                        c
-                    } else {
-                        return Err(ExpanderError::ClosingBracketNotFound);
-                    };
-
-                    let mut rem = s;
-                    while let Some(ec) = rem.find("\\}") {
-                        if ec < closing {
-                            rem = &s[closing + 1..];
-                            if let Some(c) = rem.find('}') {
-                                closing += c + 1;
-                            } else {
-                                return Err(ExpanderError::ClosingBracketNotFound);
-                            }
-                        } else {
-                            break;
-                        }
-                    }
-
-                    let inner = (&s[0..closing]).replace("\\}", "}");
-                    s = &s[closing + 1..];
-
-                    if inner.starts_with('#') {
-                        let var = &inner[1..];
-
-                        match vars.get(var) {
-                            Some(v) => res.push_str(&v.chars().count().to_string()),
-                            None => {
-                                return Err(ExpanderError::VariableNotFound);
-                            }
-                        };
-                    } else if let Some(idx) =
-                                  inner.find(|c: char| [':', '-', '+', '?'].contains(&c)) {
-                        let varname = &inner[..idx];
-
-                        let opt = &inner[idx..];
-                        // ignoreing ':'
-                        let opt = if opt.starts_with(':') {
-                            &inner[idx + 1..]
-                        } else {
-                            opt
-                        };
-
-                        if opt.starts_with('-') {
-                            // use default value
-                            match vars.get(varname) {
-                                Some(v) => res.push_str(v),
-                                None => res.push_str(&opt[1..]),
-                            }
-                        } else if opt.starts_with('=') {
-                            // assign default value
-                            res.push_str(vars.entry(varname.to_string())
-                                .or_insert((&opt[1..]).to_string()));
-                        } else if opt.starts_with('+') {
-                            // use alternative value
-                            match vars.get(varname) {
-                                Some(_) => (),
-                                None => res.push_str(&inner[idx + 2..]),
-                            }
-                        } else if opt.starts_with('?') {
-                            // indicate error if unset
-                            match vars.get(varname) {
-                                Some(v) => res.push_str(v),
-                                None => {
-                                    return Err(ExpanderError::VariableNotFound);
-                                }
-                            }
-                        } else {
-                            return Err(ExpanderError::UnknownPattern);
-                        }
-                    } else if let Some(idx) = inner.find(|c: char| ['#', '%'].contains(&c)) {
-                        let var = if let Some(v) = vars.get(&inner[..idx]) {
-                            v
-                        } else {
+                (escaped_dollar, Some(idx_dollar)) => {
+                    if let Some(idx_escaped_dollar) = escaped_dollar {
+                        if idx_escaped_dollar + 1 == idx_dollar {
+                            let mut string = (&s[0..idx_escaped_dollar]).to_string();
+                            string.push('$');
+                            fmts.push(Format::PlainStr(string));
+                            s = &s[idx_dollar + 1..];
                             continue 'outer;
-                        };
-
-                        let inner = &inner[idx..];
-
-                        let (pat, len, pos) = if inner.starts_with("##") {
-                            (&inner[2..], MatchLength::Longest, MatchPosition::Prefix)
-                        } else if inner.starts_with('#') {
-                            (&inner[1..], MatchLength::Shortest, MatchPosition::Prefix)
-                        } else if inner.starts_with("%%") {
-                            (&inner[2..], MatchLength::Longest, MatchPosition::Suffix)
-                        } else if inner.starts_with('%') {
-                            (&inner[1..], MatchLength::Shortest, MatchPosition::Suffix)
-                        } else {
-                            return Err(ExpanderError::UnknownPattern);
-                        };
-                        let pat = try!(Pattern::new(pat, len, pos));
-
-                        if let Some(i) = pat.matches(var) {
-                            match pos {
-                                MatchPosition::Prefix => {
-                                    res.push_str(&var[i..]);
-                                }
-
-                                MatchPosition::Suffix => {
-                                    res.push_str(&var[..var.len() - i]);
-                                }
-                            }
-                        } else {
-                            res.push_str(var);
-                        }
-                    } else {
-                        if inner.chars().all(|c| c.is_alphanumeric()) {
-                            if let Some(v) = vars.get(inner.as_str()) {
-                                res.push_str(v);
-                            }
-                        } else {
-                            return Err(ExpanderError::UnknownPattern);
                         }
                     }
-                } else {
-                    let put_len = if s.starts_with('#') {
+
+                    fmts.push(Format::PlainStr((&s[0..idx_dollar]).to_string()));
+                    s = &s[idx_dollar + 1..];
+
+                    if s.starts_with('{') {
                         s = &s[1..];
-                        true
-                    } else {
-                        false
-                    };
 
-                    let e = match s.find(|c: char| !c.is_alphanumeric()) {
-                        Some(e) => e,
-                        None => s.len(),
-                    };
-
-                    if e == 0 {
-                        res.push('$');
-                        continue;
-                    }
-
-                    if let Some(v) = vars.get(&s[0..e]) {
-                        if put_len {
-                            res.push_str(&v.chars().count().to_string());
+                        let mut closing = if let Some(c) = s.find('}') {
+                            c
                         } else {
-                            res.push_str(v);
-                        }
-                    }
+                            return Err(ExpanderError::ClosingBracketNotFound);
+                        };
 
-                    s = &s[e..];
+                        let mut rem = s;
+                        while let Some(ec) = rem.find("\\}") {
+                            if ec < closing {
+                                rem = &s[closing + 1..];
+                                if let Some(c) = rem.find('}') {
+                                    closing += c + 1;
+                                } else {
+                                    return Err(ExpanderError::ClosingBracketNotFound);
+                                }
+                            } else {
+                                break;
+                            }
+                        }
+
+                        let inner = (&s[0..closing]).replace("\\}", "}");
+                        s = &s[closing + 1..];
+
+                        if inner.starts_with('#') {
+                            let param = &inner[1..];
+                            fmts.push(Format::StringLength(param.to_string()));
+                        } else if let Some(idx) =
+                                      inner.find(|c: char| [':', '-', '+', '?'].contains(&c)) {
+                            let param = (&inner[..idx]).to_string();
+
+                            let opt = &inner[idx..];
+                            // ignoreing ':'
+                            let opt = if opt.starts_with(':') {
+                                &inner[idx + 1..]
+                            } else {
+                                opt
+                            };
+
+                            let word = (&opt[1..]).to_string();
+
+                            if opt.starts_with('-') {
+                                // use default value
+                                fmts.push(Format::UseDefaultValue(param, word))
+                            } else if opt.starts_with('=') {
+                                // assign default value
+                                fmts.push(Format::AssignDefaultValue(param, word));
+                            } else if opt.starts_with('+') {
+                                // use alternative value
+                                fmts.push(Format::UseAlternativeValue(param, word));
+                            } else if opt.starts_with('?') {
+                                // indicate error if unset
+                                fmts.push(Format::IndicateErrorIfUnset(param));
+                            } else {
+                                return Err(ExpanderError::UnknownPattern);
+                            }
+                        } else if let Some(idx) = inner.find(|c: char| ['#', '%'].contains(&c)) {
+                            let param = (&inner[..idx]).to_string();
+                            let inner = &inner[idx..];
+
+                            let (pat, len, pos) = if inner.starts_with("##") {
+                                (&inner[2..], MatchLength::Longest, MatchPosition::Prefix)
+                            } else if inner.starts_with('#') {
+                                (&inner[1..], MatchLength::Shortest, MatchPosition::Prefix)
+                            } else if inner.starts_with("%%") {
+                                (&inner[2..], MatchLength::Longest, MatchPosition::Suffix)
+                            } else if inner.starts_with('%') {
+                                (&inner[1..], MatchLength::Shortest, MatchPosition::Suffix)
+                            } else {
+                                return Err(ExpanderError::UnknownPattern);
+                            };
+                            let pat = try!(Pattern::new(pat, len, pos));
+                            fmts.push(Format::RemovePattern(param, pat));
+                        } else {
+                            if inner.chars().all(|c| c.is_alphanumeric()) {
+                                fmts.push(Format::Parameter(inner.as_str().to_string()));
+                            } else {
+                                return Err(ExpanderError::UnknownPattern);
+                            }
+                        }
+                    } else {
+                        let put_len = if s.starts_with('#') {
+                            s = &s[1..];
+                            true
+                        } else {
+                            false
+                        };
+
+                        let e = match s.find(|c: char| !c.is_alphanumeric()) {
+                            Some(e) => e,
+                            None => s.len(),
+                        };
+
+                        if e == 0 {
+                            fmts.push(Format::PlainChar('$'));
+                            continue;
+                        }
+
+                        let v = (&s[0..e]).to_string();
+                        if put_len {
+                            fmts.push(Format::StringLength(v))
+                        } else {
+                            fmts.push(Format::Parameter(v));
+                        }
+
+                        s = &s[e..];
+                    }
                 }
             }
         }
+
+        Ok(Expander { formats: fmts })
     }
 
-    Ok(res)
+    pub fn expand(&self, params: &mut HashMap<String, String>) -> Result<String, ExpanderError> {
+        let mut res = String::new();
+
+        for f in &self.formats {
+            match f {
+                &Format::PlainChar(c) => res.push(c),
+                &Format::PlainStr(ref s) => res.push_str(&s),
+
+                &Format::Parameter(ref param) => {
+                    if let Some(v) = params.get(param) {
+                        res.push_str(&v);
+                    }
+                }
+
+                &Format::UseDefaultValue(ref param, ref default) => {
+                    if let Some(v) = params.get(param) {
+                        res.push_str(&v);
+                    } else {
+                        res.push_str(&default);
+                    }
+                }
+
+                &Format::AssignDefaultValue(ref param, ref default) => {
+                    res.push_str(params.entry(param.clone())
+                        .or_insert(default.clone()));
+                }
+
+                &Format::IndicateErrorIfUnset(ref param) => {
+                    if let Some(v) = params.get(param) {
+                        res.push_str(v);
+                    } else {
+                        return Err(ExpanderError::VariableNotFound);
+                    }
+                }
+
+                &Format::UseAlternativeValue(ref param, ref alt) => {
+                    if let None = params.get(param) {
+                        res.push_str(alt);
+                    }
+                }
+
+                &Format::StringLength(ref param) => {
+                    if let Some(v) = params.get(param) {
+                        res.push_str(&v.chars().count().to_string());
+                    }
+                }
+
+                &Format::RemovePattern(ref param, ref pat) => {
+                    if let Some(v) = params.get(param) {
+                        if let Some(i) = pat.matches(v) {
+                            match pat.pos {
+                                MatchPosition::Prefix => {
+                                    res.push_str(&v[i..]);
+                                }
+
+                                MatchPosition::Suffix => {
+                                    res.push_str(&v[..v.len() - i]);
+                                }
+                            }
+                        } else {
+                            res.push_str(&v);
+                        }
+                    }
+                }
+            }
+        }
+
+        Ok(res)
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use std::collections::HashMap;
+    use super::*;
 
     #[test]
     fn it_works() {
-        let mut vars = HashMap::new();
-        vars.insert("HOME".to_string(), "/home/blah".to_string());
+        let mut params = HashMap::new();
+        params.insert("HOME".to_string(), "/home/blah".to_string());
 
-        let e = super::expand("/$nonexistent $HOME/foo\\$bar", &mut vars);
-        assert_eq!(e.unwrap(), "/ /home/blah/foo$bar");
+        let e = Expander::new("/$nonexistent $HOME/foo\\$bar").unwrap();
+        assert_eq!(e.expand(&mut params).unwrap(), "/ /home/blah/foo$bar");
 
-        vars.insert("var".to_string(), "1234５６７８".to_string());
+        params.insert("num".to_string(), "1234５６７８".to_string());
 
-        let e = super::expand("var is ${#var} chars long, yes, var is $#var chars long",
-                              &mut vars);
-        assert_eq!(e.unwrap(), "var is 8 chars long, yes, var is 8 chars long")
+        let e = Expander::new("num is ${#num} chars long, num is $#num chars long!").unwrap();
+        println!("{:?}", e);
+        assert_eq!(e.expand(&mut params).unwrap(),
+                   "num is 8 chars long, num is 8 chars long!")
     }
 
     #[test]
     fn test_default() {
-        let mut vars = HashMap::new();
-        vars.insert("foo".to_string(), "value".to_string());
+        let mut params = HashMap::new();
+        params.insert("foo".to_string(), "value".to_string());
 
-        let e = super::expand("${bar:-a\\}b}/${bar:-c\\}}", &mut vars);
-        assert_eq!(e.unwrap(), "a}b/c}");
+        let e = Expander::new("${bar:-a\\}b}/${bar:-c\\}}").unwrap();
+        assert_eq!(e.expand(&mut params).unwrap(), "a}b/c}");
 
-        let e = super::expand("${foo:-no} ${bar:-substituted} ${baz:=assign}", &mut vars);
-        assert!(!vars.contains_key("bar"));
-        assert_eq!(e.unwrap(), "value substituted assign");
-        assert_eq!(vars.get("baz").unwrap(), "assign");
+        let e = Expander::new("${foo:-no} ${bar:-substituted} ${baz:=assign}").unwrap();
+        assert!(!params.contains_key("bar"));
+        assert_eq!(e.expand(&mut params).unwrap(), "value substituted assign");
+        assert_eq!(params.get("baz").unwrap(), "assign");
 
-        let e = super::expand("${qux:?}", &mut vars);
+        let e = Expander::new("${qux:?}").unwrap().expand(&mut params);
         assert_eq!(e, Err(super::ExpanderError::VariableNotFound));
     }
 
     #[test]
     fn test_glob() {
-        let mut vars = HashMap::new();
-        vars.insert("foo".to_string(), "x.blah.c".to_string());
-        vars.insert("path".to_string(), "foo/bar/baz".to_string());
+        let mut params = HashMap::new();
+        params.insert("foo".to_string(), "x.blah.c".to_string());
+        params.insert("path".to_string(), "foo/bar/baz".to_string());
 
-        let e = super::expand(r#"${foo#x.*}/${foo##x.*}"#, &mut vars);
-        assert_eq!(e.unwrap(), "blah.c/");
+        let e = Expander::new(r#"${foo#x.*}/${foo##x.*}"#).unwrap();
+        assert_eq!(e.expand(&mut params).unwrap(), "blah.c/");
 
-        let e = super::expand(r#"${foo%*.c}/${foo%%*.c}"#, &mut vars);
-        assert_eq!(e.unwrap(), "x.blah/");
+        let e = Expander::new(r#"${foo%*.c}/${foo%%*.c}"#).unwrap();
+        assert_eq!(e.expand(&mut params).unwrap(), "x.blah/");
 
-
-        let e = super::expand(r#"${path%%/*}:${path##*/}"#, &mut vars);
-        assert_eq!(e.unwrap(), "foo:baz");
+        let e = Expander::new(r#"${path%%/*}:${path##*/}"#).unwrap();
+        assert_eq!(e.expand(&mut params).unwrap(), "foo:baz");
     }
 }

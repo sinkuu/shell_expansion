@@ -6,8 +6,8 @@ pub enum GlobError {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Pattern {
-    len: MatchLength,
-    pos: MatchPosition,
+    pub len: MatchLength,
+    pub pos: MatchPosition,
     matchers: Vec<Matcher>,
 }
 
