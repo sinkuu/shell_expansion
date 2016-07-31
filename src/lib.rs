@@ -49,7 +49,6 @@ pub struct Expander {
 
 impl Expander {
     pub fn new(s: &str) -> Result<Expander, ExpanderError> {
-        println!("Expander::new {}", s);
         let mut fmts = vec![];
 
         let mut s = s;
@@ -117,7 +116,6 @@ impl Expander {
                         }
 
                         let inner = (&s[0..closing]).replace("\\}", "}");
-                        println!("{}", inner);
                         s = &s[closing + 1..];
 
                         fn starts_with_any(s: &str, cs: &[char]) -> bool {
@@ -174,7 +172,6 @@ impl Expander {
                                 } else {
                                     return Err(ExpanderError::UnknownPattern);
                                 };
-                                println!("pat = {}", inner);
                                 // let pat = try!(Pattern::new(pat, len, pos));
                                 fmts.push(Format::RemovePattern(param,
                                                                 try!(Expander::new(pat)),
@@ -328,7 +325,6 @@ mod tests {
         params.insert("num".to_string(), "1234５６７８".to_string());
 
         let e = Expander::new("num is ${#num} chars long, num is $#num chars long!").unwrap();
-        println!("{:?}", e);
         assert_eq!(e.expand(&mut params).unwrap(),
                    "num is 8 chars long, num is 8 chars long!")
     }
