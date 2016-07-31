@@ -1,4 +1,4 @@
-//! Shell-like parameter expansion.
+//! Shell-ish parameter expansion.
 
 use std::collections::HashMap;
 
