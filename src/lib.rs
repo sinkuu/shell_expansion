@@ -338,10 +338,10 @@ mod tests {
         let mut params = HashMap::new();
         params.insert("foo".to_string(), "value".to_string());
 
-        let e = Expander::new("${bar:-a\\}b}/${bar:-c\\}}").unwrap();
+        let e = Expander::new("${bar:-a\\}b}/${bar-c\\}}").unwrap();
         assert_eq!(e.expand(&mut params).unwrap(), "a}b/c}");
 
-        let e = Expander::new("${foo:-no} ${bar:-substituted} ${baz:=assign}").unwrap();
+        let e = Expander::new("${foo:-no} ${bar-substituted} ${baz:=assign}").unwrap();
         assert!(!params.contains_key("bar"));
         assert_eq!(e.expand(&mut params).unwrap(), "value substituted assign");
         assert_eq!(params.get("baz").unwrap(), "assign");
