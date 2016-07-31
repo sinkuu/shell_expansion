@@ -271,7 +271,7 @@ impl Expander {
                 }
 
                 Format::UseAlternativeValue(ref param, ref alt) => {
-                    if let None = params.get(param) {
+                    if let Some(_) = params.get(param) {
                         res.push_str(&try!(alt.expand(params)));
                     }
                 }
@@ -331,13 +331,12 @@ mod tests {
         assert_eq!(e.expand(&mut params).unwrap(), "test.c");
 
         params.insert("num".to_string(), "1234５６７８".to_string());
-
         let e = Expander::new("num is ${#num} chars long, num is $#num chars long!").unwrap();
         assert_eq!(e.expand(&mut params).unwrap(),
                    "num is 8 chars long, num is 8 chars long!");
 
-       let e = Expander::new(r#"${nonexistent-\}\${}"#).unwrap();
-       assert_eq!(e.expand(&mut params).unwrap(), "}${");
+        let e = Expander::new(r#"${nonexistent-\}\${}"#).unwrap();
+        assert_eq!(e.expand(&mut params).unwrap(), "}${");
     }
 
     #[test]
@@ -355,6 +354,12 @@ mod tests {
 
         let e = Expander::new("${qux:?}").unwrap().expand(&mut params);
         assert_eq!(e, Err(super::ExpanderError::VariableNotFound));
+
+        let e = Expander::new("${qux+alt}").unwrap();
+        assert_eq!(e.expand(&mut params).unwrap(), "");
+        params.insert("qux".to_string(), "quux".to_string());
+        let e = Expander::new("${qux+alt}").unwrap();
+        assert_eq!(e.expand(&mut params).unwrap(), "alt");
     }
 
     #[test]
