@@ -193,30 +193,30 @@ impl Expander {
         let mut res = String::new();
 
         for f in &self.formats {
-            match f {
-                &Format::PlainChar(c) => res.push(c),
-                &Format::PlainStr(ref s) => res.push_str(&s),
+            match *f {
+                Format::PlainChar(c) => res.push(c),
+                Format::PlainStr(ref s) => res.push_str(s),
 
-                &Format::Parameter(ref param) => {
+                Format::Parameter(ref param) => {
                     if let Some(v) = params.get(param) {
-                        res.push_str(&v);
+                        res.push_str(v);
                     }
                 }
 
-                &Format::UseDefaultValue(ref param, ref default) => {
+                Format::UseDefaultValue(ref param, ref default) => {
                     if let Some(v) = params.get(param) {
-                        res.push_str(&v);
+                        res.push_str(v);
                     } else {
-                        res.push_str(&default);
+                        res.push_str(default);
                     }
                 }
 
-                &Format::AssignDefaultValue(ref param, ref default) => {
+                Format::AssignDefaultValue(ref param, ref default) => {
                     res.push_str(params.entry(param.clone())
                         .or_insert(default.clone()));
                 }
 
-                &Format::IndicateErrorIfUnset(ref param) => {
+                Format::IndicateErrorIfUnset(ref param) => {
                     if let Some(v) = params.get(param) {
                         res.push_str(v);
                     } else {
@@ -224,19 +224,19 @@ impl Expander {
                     }
                 }
 
-                &Format::UseAlternativeValue(ref param, ref alt) => {
+                Format::UseAlternativeValue(ref param, ref alt) => {
                     if let None = params.get(param) {
                         res.push_str(alt);
                     }
                 }
 
-                &Format::StringLength(ref param) => {
+                Format::StringLength(ref param) => {
                     if let Some(v) = params.get(param) {
                         res.push_str(&v.chars().count().to_string());
                     }
                 }
 
-                &Format::RemovePattern(ref param, ref pat) => {
+                Format::RemovePattern(ref param, ref pat) => {
                     if let Some(v) = params.get(param) {
                         if let Some(i) = pat.matches(v) {
                             match pat.pos {
@@ -249,7 +249,7 @@ impl Expander {
                                 }
                             }
                         } else {
-                            res.push_str(&v);
+                            res.push_str(v);
                         }
                     }
                 }
