@@ -29,17 +29,17 @@ enum Format {
     /// `${parameter}` or `$parameter`
     Parameter(String),
     /// `${parameter-word}`
-    UseDefaultValue(String, String),
+    UseDefaultValue(String, Expander),
     /// `${parameter=word}`
-    AssignDefaultValue(String, String),
+    AssignDefaultValue(String, Expander),
     /// `${parameter?word}`
     IndicateErrorIfUnset(String),
     /// `${parameter+word}`
-    UseAlternativeValue(String, String),
+    UseAlternativeValue(String, Expander),
     /// `${#parameter}` or `$#parameter`
     StringLength(String),
     /// `${parameter%pat}`, `${parameter%%pat}`, `${parameter#pat}`, `${parameter##pat}`
-    RemovePattern(String, Pattern),
+    RemovePattern(String, Expander, MatchLength, MatchPosition),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -49,6 +49,7 @@ pub struct Expander {
 
 impl Expander {
     pub fn new(s: &str) -> Result<Expander, ExpanderError> {
+        println!("Expander::new {}", s);
         let mut fmts = vec![];
 
         let mut s = s;
@@ -82,72 +83,104 @@ impl Expander {
                             return Err(ExpanderError::ClosingBracketNotFound);
                         };
 
-                        let mut rem = s;
-                        while let Some(ec) = rem.find("\\}") {
-                            if ec < closing {
-                                rem = &s[closing + 1..];
-                                if let Some(c) = rem.find('}') {
-                                    closing += c + 1;
-                                } else {
+                        let mut rem = s.char_indices();
+                        let mut level = 1;
+                        while level > 0 {
+                            match rem.next() {
+                                None => {
                                     return Err(ExpanderError::ClosingBracketNotFound);
                                 }
-                            } else {
-                                break;
+
+                                Some((_, '\\')) => {
+                                    match rem.next() {
+                                        None => return Err(ExpanderError::ClosingBracketNotFound),
+                                        Some((_, '}')) => (),
+                                        Some(_) => return Err(ExpanderError::UnknownEscapeSequence),
+                                    }
+                                }
+
+                                Some((_, '$')) => {
+                                    match rem.next() {
+                                        None => return Err(ExpanderError::ClosingBracketNotFound),
+                                        Some((_, '{')) => level += 1,
+                                        Some(_) => (),
+                                    }
+                                }
+
+                                Some((i, '}')) => {
+                                    level -= 1;
+                                    closing = i;
+                                }
+
+                                Some(_) => (),
                             }
                         }
 
                         let inner = (&s[0..closing]).replace("\\}", "}");
+                        println!("{}", inner);
                         s = &s[closing + 1..];
 
+                        fn starts_with_any(s: &str, cs: &[char]) -> bool {
+                            cs.iter().any(|&c| s.starts_with(c))
+                        }
+
+                        let after_ident = inner.find(|c: char| !c.is_alphanumeric());
                         if inner.starts_with('#') {
                             let param = &inner[1..];
                             fmts.push(Format::StringLength(param.to_string()));
-                        } else if let Some(idx) =
-                                      inner.find(|c: char| [':', '-', '+', '?'].contains(&c)) {
-                            let param = (&inner[..idx]).to_string();
+                        } else if let Some(after_ident) = after_ident {
+                            let fs = &inner[after_ident..after_ident + 1];
+                            if starts_with_any(fs, &[':', '-', '+', '?']) {
+                                let param = (&inner[..after_ident]).to_string();
 
-                            let opt = &inner[idx..];
-                            // ignoreing ':'
-                            let opt = if opt.starts_with(':') {
-                                &inner[idx + 1..]
-                            } else {
-                                opt
-                            };
+                                let opt = &inner[after_ident..];
+                                // ignoreing ':'
+                                let opt = if opt.starts_with(':') {
+                                    &inner[after_ident + 1..]
+                                } else {
+                                    opt
+                                };
 
-                            let word = (&opt[1..]).to_string();
+                                let word = &opt[1..];
 
-                            if opt.starts_with('-') {
-                                // use default value
-                                fmts.push(Format::UseDefaultValue(param, word))
-                            } else if opt.starts_with('=') {
-                                // assign default value
-                                fmts.push(Format::AssignDefaultValue(param, word));
-                            } else if opt.starts_with('+') {
-                                // use alternative value
-                                fmts.push(Format::UseAlternativeValue(param, word));
-                            } else if opt.starts_with('?') {
-                                // indicate error if unset
-                                fmts.push(Format::IndicateErrorIfUnset(param));
-                            } else {
-                                return Err(ExpanderError::UnknownPattern);
+                                fmts.push(if opt.starts_with('-') {
+                                    // use default value
+                                    Format::UseDefaultValue(param, try!(Expander::new(word)))
+                                } else if opt.starts_with('=') {
+                                    // assign default value
+                                    Format::AssignDefaultValue(param, try!(Expander::new(word)))
+                                } else if opt.starts_with('+') {
+                                    // use alternative value
+                                    Format::UseAlternativeValue(param, try!(Expander::new(word)))
+                                } else if opt.starts_with('?') {
+                                    // indicate error if unset
+                                    Format::IndicateErrorIfUnset(param)
+                                } else {
+                                    return Err(ExpanderError::UnknownPattern);
+                                })
+                            } else if starts_with_any(fs, &['#', '%']) {
+                                let param = (&inner[..after_ident]).to_string();
+                                let inner = &inner[after_ident..];
+
+
+                                let (pat, len, pos) = if inner.starts_with("##") {
+                                    (&inner[2..], MatchLength::Longest, MatchPosition::Prefix)
+                                } else if inner.starts_with('#') {
+                                    (&inner[1..], MatchLength::Shortest, MatchPosition::Prefix)
+                                } else if inner.starts_with("%%") {
+                                    (&inner[2..], MatchLength::Longest, MatchPosition::Suffix)
+                                } else if inner.starts_with('%') {
+                                    (&inner[1..], MatchLength::Shortest, MatchPosition::Suffix)
+                                } else {
+                                    return Err(ExpanderError::UnknownPattern);
+                                };
+                                println!("pat = {}", inner);
+                                // let pat = try!(Pattern::new(pat, len, pos));
+                                fmts.push(Format::RemovePattern(param,
+                                                                try!(Expander::new(pat)),
+                                                                len,
+                                                                pos));
                             }
-                        } else if let Some(idx) = inner.find(|c: char| ['#', '%'].contains(&c)) {
-                            let param = (&inner[..idx]).to_string();
-                            let inner = &inner[idx..];
-
-                            let (pat, len, pos) = if inner.starts_with("##") {
-                                (&inner[2..], MatchLength::Longest, MatchPosition::Prefix)
-                            } else if inner.starts_with('#') {
-                                (&inner[1..], MatchLength::Shortest, MatchPosition::Prefix)
-                            } else if inner.starts_with("%%") {
-                                (&inner[2..], MatchLength::Longest, MatchPosition::Suffix)
-                            } else if inner.starts_with('%') {
-                                (&inner[1..], MatchLength::Shortest, MatchPosition::Suffix)
-                            } else {
-                                return Err(ExpanderError::UnknownPattern);
-                            };
-                            let pat = try!(Pattern::new(pat, len, pos));
-                            fmts.push(Format::RemovePattern(param, pat));
                         } else {
                             if inner.chars().all(|c| c.is_alphanumeric()) {
                                 fmts.push(Format::Parameter(inner.as_str().to_string()));
@@ -204,16 +237,24 @@ impl Expander {
                 }
 
                 Format::UseDefaultValue(ref param, ref default) => {
-                    if let Some(v) = params.get(param) {
-                        res.push_str(v);
+                    // FIXME: this could be fixed when non-lexical lifetimes is implemented
+                    if params.contains_key(param) {
+                        res.push_str(params.get(param).unwrap());
                     } else {
-                        res.push_str(default);
+                        res.push_str(&try!(default.expand(params)));
                     }
                 }
 
                 Format::AssignDefaultValue(ref param, ref default) => {
-                    res.push_str(params.entry(param.clone())
-                        .or_insert(default.clone()));
+                    if params.contains_key(param) {
+                        res.push_str(params.get(param).unwrap());
+                    } else {
+                        let e = try!(default.expand(params));
+                        res.push_str(&e);
+                        params.insert(param.clone(), e);
+                    }
+                    // res.push_str(params.entry(param.clone())
+                    //    .or_insert(try!(default.expand(params))));
                 }
 
                 Format::IndicateErrorIfUnset(ref param) => {
@@ -226,7 +267,7 @@ impl Expander {
 
                 Format::UseAlternativeValue(ref param, ref alt) => {
                     if let None = params.get(param) {
-                        res.push_str(alt);
+                        res.push_str(&try!(alt.expand(params)));
                     }
                 }
 
@@ -236,8 +277,10 @@ impl Expander {
                     }
                 }
 
-                Format::RemovePattern(ref param, ref pat) => {
+                Format::RemovePattern(ref param, ref pat, len, pos) => {
+                    let e = try!(pat.expand(params));
                     if let Some(v) = params.get(param) {
+                        let pat = try!(Pattern::new(&e, len, pos));
                         if let Some(i) = pat.matches(v) {
                             match pat.pos {
                                 MatchPosition::Prefix => {
@@ -272,8 +315,9 @@ mod tests {
         params.insert("file".to_string(), "example.c".to_string());
 
 
-        let e = Expander::new("/$nonexistent $HOME/foo\\$bar").unwrap();
-        assert_eq!(e.expand(&mut params).unwrap(), "/ /home/blah/foo$bar");
+        let e = Expander::new("/$nonexistent $HOME/foo\\$bar ${subsub:-$HOME}").unwrap();
+        assert_eq!(e.expand(&mut params).unwrap(),
+                   "/ /home/blah/foo$bar /home/blah");
 
         let e = Expander::new("${file%.c}.rs").unwrap();
         assert_eq!(e.expand(&mut params).unwrap(), "example.rs");
@@ -320,5 +364,8 @@ mod tests {
 
         let e = Expander::new(r#"${path%%/*}:${path##*/}"#).unwrap();
         assert_eq!(e.expand(&mut params).unwrap(), "foo:baz");
+
+        let e = Expander::new(r#"${path%*${nonexistent:-${path#f?o?}}*}"#).unwrap();
+        assert_eq!(e.expand(&mut params).unwrap(), "foo/");
     }
 }
