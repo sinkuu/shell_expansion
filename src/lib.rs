@@ -331,9 +331,9 @@ mod tests {
         assert_eq!(e.expand(&mut params).unwrap(), "test.c");
 
         params.insert("num".to_string(), "1234５６７８".to_string());
-        let e = Expander::new("num is ${#num} chars long, num is $#num chars long!").unwrap();
+        let e = Expander::new("num is ${#num} chars long, num is $#num chars long! $#num").unwrap();
         assert_eq!(e.expand(&mut params).unwrap(),
-                   "num is 8 chars long, num is 8 chars long!");
+                   "num is 8 chars long, num is 8 chars long! 8");
 
         // NOTE: escapes are not consistent with shell
         let e = Expander::new(r#"${nonexistent-\}\${}"#).unwrap();

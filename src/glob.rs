@@ -311,20 +311,20 @@ type NamedClasses = &'static [(&'static str, Class)];
 // [:word:]       word characters (== [0-9A-Za-z_])
 // [:xdigit:]     hex digit (== [0-9A-Fa-f])
 // Taken from: http://golang.org/pkg/regex/syntax/
-const ASCII_CLASSES: NamedClasses = &[("alnum", &ALNUM),
-                                      ("alpha", &ALPHA),
-                                      ("ascii", &ASCII),
-                                      ("blank", &BLANK),
-                                      ("cntrl", &CNTRL),
-                                      ("digit", &DIGIT),
-                                      ("graph", &GRAPH),
-                                      ("lower", &LOWER),
-                                      ("print", &PRINT),
-                                      ("punct", &PUNCT),
-                                      ("space", &SPACE),
-                                      ("upper", &UPPER),
-                                      ("word", &WORD),
-                                      ("xdigit", &XDIGIT)];
+const ASCII_CLASSES: NamedClasses = &[("alnum", ALNUM),
+                                      ("alpha", ALPHA),
+                                      ("ascii", ASCII),
+                                      ("blank", BLANK),
+                                      ("cntrl", CNTRL),
+                                      ("digit", DIGIT),
+                                      ("graph", GRAPH),
+                                      ("lower", LOWER),
+                                      ("print", PRINT),
+                                      ("punct", PUNCT),
+                                      ("space", SPACE),
+                                      ("upper", UPPER),
+                                      ("word", WORD),
+                                      ("xdigit", XDIGIT)];
 
 const ALNUM: Class = &[('0', '9'), ('A', 'Z'), ('a', 'z')];
 const ALPHA: Class = &[('A', 'Z'), ('a', 'z')];
@@ -602,7 +602,7 @@ mod tests {
                          "_abcabcabcabcabcabc",
                          Some(18));
 
-        assert_match_eq!("a*b*c*d",
+        assert_match_eq!("a*[b]*c*d",
                          MatchLength::Shortest,
                          MatchPosition::Prefix,
                          "abced",
