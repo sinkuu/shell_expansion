@@ -207,9 +207,9 @@ fn search_matches(matchers: &[Matcher],
 }
 
 fn matches_with_span(matchers: &[Matcher],
-                      span: Option<usize>,
-                      input: &[char])
-                      -> (usize, bool, usize) {
+                     span: Option<usize>,
+                     input: &[char])
+                     -> (usize, bool, usize) {
     let mut len_matched = 0;
 
     let mut input = &input[..];
@@ -264,7 +264,7 @@ fn matches_with_span(matchers: &[Matcher],
                         if let Some(s) = span {
                             if input.len() >= s {
                                 len_matched += s;
-                                return (i+1, true, len_matched);
+                                return (i + 1, true, len_matched);
                             }
                         }
                         return (i, false, len_matched);
