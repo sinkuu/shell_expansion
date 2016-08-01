@@ -155,60 +155,24 @@ impl Pattern {
             MatchPosition::Suffix => string.chars().rev().collect(),
         };
 
-        let mut str = String::new();
-        for &c in &chars {
-            str.push(c);
-        }
-
         let num_many = self.matchers.iter().filter(|&m| m == &Matcher::ManyChar).count();
 
-        match self.len {
-                MatchLength::Longest => {
-                    (0..chars.len() + 1)
-                        .rev()
-                        .filter_map(|i| {
-                            search_matches(&self.matchers, num_many, i, self.len, &chars)
-                        })
-                        .next()
-                }
-
-                MatchLength::Shortest => {
-                    (0..chars.len() + 1)
-                        .filter_map(|i| {
-                            search_matches(&self.matchers, num_many, i, self.len, &chars)
-                        })
-                        .next()
-                }
-            }
-            .map(|l| {
-                (&chars[..l])
-                    .iter()
-                    .map(|c| c.len_utf8())
-                    .fold(0, |acc, x| acc + x)
-
-            })
+        search_matches(&self.matchers, num_many, None, self.len, &chars)
     }
 }
 
 fn search_matches(matchers: &[Matcher],
                   num_many: usize,
-                  span: usize,
+                  span: Option<usize>,
                   matchlen: MatchLength,
                   input: &[char])
                   -> Option<usize> {
-    let def_n = match matchlen {
-        MatchLength::Longest => input.len(),
-        MatchLength::Shortest => 0,
-    };
-
-    let (matched, matched_many, len_matched) = matches_with_spans(matchers, &[span], def_n, input);
-
-    debug_assert!(matched_many <= num_many);
+    let (matched, many_matched, len_matched) = matches_with_span(matchers, span, input);
 
     if matched == matchers.len() {
-        debug_assert!(num_many == matched_many);
+        debug_assert!(num_many == if many_matched { 1 } else { 0 });
         Some(len_matched)
-    } else if matched == 0 || num_many == 0 {
+    } else if !(num_many > 0 && span.is_none()) && (matched == 0 || num_many == 0) {
         None
     } else {
         match matchlen {
@@ -217,8 +181,8 @@ fn search_matches(matchers: &[Matcher],
                     .rev()
                     .filter_map(|i| {
                         search_matches(&matchers[matched..],
-                                       num_many - if matched_many > 0 { 1 } else { 0 },
-                                       i,
+                                       num_many - if many_matched { 1 } else { 0 },
+                                       Some(i),
                                        matchlen,
                                        &input[len_matched..])
                     })
@@ -230,8 +194,8 @@ fn search_matches(matchers: &[Matcher],
                 (0..input.len() + 1)
                     .filter_map(|i| {
                         search_matches(&matchers[matched..],
-                                       num_many - if matched_many > 0 { 1 } else { 0 },
-                                       i,
+                                       num_many - if many_matched { 1 } else { 0 },
+                                       Some(i),
                                        matchlen,
                                        &input[len_matched..])
                     })
@@ -242,20 +206,19 @@ fn search_matches(matchers: &[Matcher],
     }
 }
 
-fn matches_with_spans(matchers: &[Matcher],
-                      many_ns: &[usize],
-                      many_default_n: usize,
+fn matches_with_span(matchers: &[Matcher],
+                      span: Option<usize>,
                       input: &[char])
-                      -> (usize, usize, usize) {
-    let mut nmany = 0;
+                      -> (usize, bool, usize) {
     let mut len_matched = 0;
 
     let mut input = &input[..];
 
     let mut ms = matchers.iter().enumerate();
+
     while !input.is_empty() {
         match ms.next() {
-            None => return (matchers.len(), nmany, len_matched),
+            None => return (matchers.len(), false, len_matched),
 
             Some((i, m)) => {
                 match *m {
@@ -266,7 +229,7 @@ fn matches_with_spans(matchers: &[Matcher],
                             len_matched += 1;
                             input = &input[1..];
                         } else {
-                            return (i, nmany, len_matched);
+                            return (i, false, len_matched);
                         }
                     }
 
@@ -275,7 +238,7 @@ fn matches_with_spans(matchers: &[Matcher],
                             len_matched += sm.len();
                             input = &input[sm.len()..];
                         } else {
-                            return (i, nmany, len_matched);
+                            return (i, false, len_matched);
                         }
                     }
 
@@ -284,7 +247,7 @@ fn matches_with_spans(matchers: &[Matcher],
                             len_matched += 1;
                             input = &input[1..];
                         } else {
-                            return (i, nmany, len_matched);
+                            return (i, false, len_matched);
                         }
                     }
 
@@ -293,26 +256,25 @@ fn matches_with_spans(matchers: &[Matcher],
                             len_matched += 1;
                             input = &input[1..];
                         } else {
-                            return (i, nmany, len_matched);
+                            return (i, false, len_matched);
                         }
                     }
 
                     Matcher::ManyChar => {
-                        let nm = many_ns.get(nmany).cloned().unwrap_or(many_default_n);
-                        if input.len() >= nm {
-                            len_matched += nm;
-                            nmany += 1;
-                            input = &input[nm..];
-                        } else {
-                            return (i, nmany, len_matched);
+                        if let Some(s) = span {
+                            if input.len() >= s {
+                                len_matched += s;
+                                return (i+1, true, len_matched);
+                            }
                         }
+                        return (i, false, len_matched);
                     }
                 }
             }
         }
     }
 
-    (matchers.len() - ms.count(), nmany, len_matched)
+    (matchers.len() - ms.count(), false, len_matched)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
