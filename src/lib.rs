@@ -335,6 +335,7 @@ mod tests {
         assert_eq!(e.expand(&mut params).unwrap(),
                    "num is 8 chars long, num is 8 chars long!");
 
+        // NOTE: escapes are not consistent with shell
         let e = Expander::new(r#"${nonexistent-\}\${}"#).unwrap();
         assert_eq!(e.expand(&mut params).unwrap(), "}${");
     }
@@ -367,6 +368,9 @@ mod tests {
         let mut params = HashMap::new();
         params.insert("foo".to_string(), "x.blah.c".to_string());
         params.insert("path".to_string(), "foo/bar/baz".to_string());
+
+        let e = Expander::new(r#"${foo#[!a-wy-z][!]}"#).unwrap();
+        assert_eq!(e.expand(&mut params).unwrap(), "blah.c");
 
         let e = Expander::new(r#"${foo#x.*}/${foo##x.*}"#).unwrap();
         assert_eq!(e.expand(&mut params).unwrap(), "blah.c/");

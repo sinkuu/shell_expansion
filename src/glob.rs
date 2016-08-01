@@ -472,12 +472,10 @@ impl Matcher {
 mod tests {
     use super::*;
 
-    fn assert_match_eq(glob: &str,
-                       len: MatchLength,
-                       pos: MatchPosition,
-                       s: &str,
-                       res: Option<usize>) {
-        assert_eq!(Pattern::new(glob, len, pos).unwrap().matches(s), res);
+    macro_rules! assert_match_eq {
+        ($glob:expr, $len:expr, $pos:expr, $s:expr, $ret:expr) => {
+            assert_eq!(Pattern::new($glob, $len, $pos).unwrap().matches($s), $ret);
+        };
     }
 
     #[test]
@@ -492,77 +490,83 @@ mod tests {
                        .unwrap());
 
         let p = "";
-        assert_match_eq(p, MatchLength::Shortest, MatchPosition::Prefix, "abc", None);
-        assert_match_eq(p, MatchLength::Shortest, MatchPosition::Prefix, "", None);
+        assert_match_eq!(p, MatchLength::Shortest, MatchPosition::Prefix, "abc", None);
+        assert_match_eq!(p, MatchLength::Shortest, MatchPosition::Prefix, "", None);
         let p = "a";
-        assert_match_eq(p, MatchLength::Shortest, MatchPosition::Prefix, "", None);
+        assert_match_eq!(p, MatchLength::Shortest, MatchPosition::Prefix, "", None);
         let p = "*";
-        assert_match_eq(p, MatchLength::Shortest, MatchPosition::Prefix, "", Some(0));
+        assert_match_eq!(p, MatchLength::Shortest, MatchPosition::Prefix, "", Some(0));
 
         let p = "a*b?d[feda-d]";
-        assert_match_eq(p,
-                        MatchLength::Shortest,
-                        MatchPosition::Prefix,
-                        "abcde",
-                        Some(5));
-        assert_match_eq(p,
-                        MatchLength::Longest,
-                        MatchPosition::Prefix,
-                        "abcde",
-                        Some(5));
+        assert_match_eq!(p,
+                         MatchLength::Shortest,
+                         MatchPosition::Prefix,
+                         "abcde",
+                         Some(5));
+        assert_match_eq!(p,
+                         MatchLength::Longest,
+                         MatchPosition::Prefix,
+                         "abcde",
+                         Some(5));
 
         let p = "a*b";
-        assert_match_eq(p,
-                        MatchLength::Shortest,
-                        MatchPosition::Prefix,
-                        "aababc",
-                        Some(3));
-        assert_match_eq(p,
-                        MatchLength::Shortest,
-                        MatchPosition::Suffix,
-                        "aababc",
-                        None);
-        assert_match_eq(p,
-                        MatchLength::Shortest,
-                        MatchPosition::Suffix,
-                        "aabab",
-                        Some(2));
-        assert_match_eq(p,
-                        MatchLength::Longest,
-                        MatchPosition::Prefix,
-                        "aababc",
-                        Some(5));
-        assert_match_eq(p,
-                        MatchLength::Longest,
-                        MatchPosition::Suffix,
-                        "aababc",
-                        None);
-        assert_match_eq(p,
-                        MatchLength::Longest,
-                        MatchPosition::Suffix,
-                        "aabab",
-                        Some(5));
+        assert_match_eq!(p,
+                         MatchLength::Shortest,
+                         MatchPosition::Prefix,
+                         "aababc",
+                         Some(3));
+        assert_match_eq!(p,
+                         MatchLength::Shortest,
+                         MatchPosition::Suffix,
+                         "aababc",
+                         None);
+        assert_match_eq!(p,
+                         MatchLength::Shortest,
+                         MatchPosition::Suffix,
+                         "aabab",
+                         Some(2));
+        assert_match_eq!(p,
+                         MatchLength::Longest,
+                         MatchPosition::Prefix,
+                         "aababc",
+                         Some(5));
+        assert_match_eq!(p,
+                         MatchLength::Longest,
+                         MatchPosition::Suffix,
+                         "aababc",
+                         None);
+        assert_match_eq!(p,
+                         MatchLength::Longest,
+                         MatchPosition::Suffix,
+                         "aabab",
+                         Some(5));
 
         let p = "a*b*c";
-        assert_match_eq(p,
-                        MatchLength::Shortest,
-                        MatchPosition::Prefix,
-                        "abbcabc",
-                        Some(4));
-        assert_match_eq(p,
-                        MatchLength::Longest,
-                        MatchPosition::Prefix,
-                        "abbcabc",
-                        Some(7));
-        assert_match_eq(p,
-                        MatchLength::Longest,
-                        MatchPosition::Prefix,
-                        "abcabcabcabcabcabc_",
-                        Some(18));
-        assert_match_eq(p,
-                        MatchLength::Longest,
-                        MatchPosition::Suffix,
-                        "_abcabcabcabcabcabc",
-                        Some(18));
+        assert_match_eq!(p,
+                         MatchLength::Shortest,
+                         MatchPosition::Prefix,
+                         "abbcabc",
+                         Some(4));
+        assert_match_eq!(p,
+                         MatchLength::Longest,
+                         MatchPosition::Prefix,
+                         "abbcabc",
+                         Some(7));
+        assert_match_eq!(p,
+                         MatchLength::Longest,
+                         MatchPosition::Prefix,
+                         "abcabcabcabcabcabc_",
+                         Some(18));
+        assert_match_eq!(p,
+                         MatchLength::Longest,
+                         MatchPosition::Suffix,
+                         "_abcabcabcabcabcabc",
+                         Some(18));
+
+        assert_match_eq!("a*b*c*d",
+                         MatchLength::Shortest,
+                         MatchPosition::Prefix,
+                         "abced",
+                         Some(5));
     }
 }
