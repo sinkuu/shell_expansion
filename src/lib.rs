@@ -320,9 +320,9 @@ mod tests {
         params.insert("file".to_string(), "example.c".to_string());
 
 
-        let e = Expander::new("/$nonexistent $HOME/foo\\$bar ${subsub:-$HOME}").unwrap();
+        let e = Expander::new("$/$nonexistent $HOME/foo\\$bar ${subsub:-${HOME}}").unwrap();
         assert_eq!(e.expand(&mut params).unwrap(),
-                   "/ /home/blah/foo$bar /home/blah");
+                   "$/ /home/blah/foo$bar /home/blah");
 
         let e = Expander::new("${file%.c}.rs").unwrap();
         assert_eq!(e.expand(&mut params).unwrap(), "example.rs");
@@ -338,6 +338,9 @@ mod tests {
         // NOTE: escapes are not consistent with shell
         let e = Expander::new(r#"${nonexistent-\}\${}"#).unwrap();
         assert_eq!(e.expand(&mut params).unwrap(), "}${");
+
+        let e = Expander::new(r#"${nonexistent-\${foo\}bar\}baz}"#).unwrap();
+        assert_eq!(e.expand(&mut params).unwrap(), "${foo}bar}baz");
     }
 
     #[test]
