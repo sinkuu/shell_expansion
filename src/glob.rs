@@ -289,6 +289,59 @@ pub enum MatchPosition {
     Suffix,
 }
 
+
+// https://github.com/rust-lang-nursery/regex/blob/master/regex-syntax/src/parser.rs
+
+type Class = &'static [(char, char)];
+type NamedClasses = &'static [(&'static str, Class)];
+
+// Classes must be in alphabetical order so that bsearch works.
+// [:alnum:]      alphanumeric (== [0-9A-Za-z])
+// [:alpha:]      alphabetic (== [A-Za-z])
+// [:ascii:]      ASCII (== [\x00-\x7F])
+// [:blank:]      blank (== [\t ])
+// [:cntrl:]      control (== [\x00-\x1F\x7F])
+// [:digit:]      digits (== [0-9])
+// [:graph:]      graphical (== [!-~])
+// [:lower:]      lower case (== [a-z])
+// [:print:]      printable (== [ -~] == [ [:graph:]])
+// [:punct:]      punctuation (== [!-/:-@[-`{-~])
+// [:space:]      whitespace (== [\t\n\v\f\r ])
+// [:upper:]      upper case (== [A-Z])
+// [:word:]       word characters (== [0-9A-Za-z_])
+// [:xdigit:]     hex digit (== [0-9A-Fa-f])
+// Taken from: http://golang.org/pkg/regex/syntax/
+const ASCII_CLASSES: NamedClasses = &[("alnum", &ALNUM),
+                                      ("alpha", &ALPHA),
+                                      ("ascii", &ASCII),
+                                      ("blank", &BLANK),
+                                      ("cntrl", &CNTRL),
+                                      ("digit", &DIGIT),
+                                      ("graph", &GRAPH),
+                                      ("lower", &LOWER),
+                                      ("print", &PRINT),
+                                      ("punct", &PUNCT),
+                                      ("space", &SPACE),
+                                      ("upper", &UPPER),
+                                      ("word", &WORD),
+                                      ("xdigit", &XDIGIT)];
+
+const ALNUM: Class = &[('0', '9'), ('A', 'Z'), ('a', 'z')];
+const ALPHA: Class = &[('A', 'Z'), ('a', 'z')];
+const ASCII: Class = &[('\x00', '\x7F')];
+const BLANK: Class = &[(' ', ' '), ('\t', '\t')];
+const CNTRL: Class = &[('\x00', '\x1F'), ('\x7F', '\x7F')];
+const DIGIT: Class = &[('0', '9')];
+const GRAPH: Class = &[('!', '~')];
+const LOWER: Class = &[('a', 'z')];
+const PRINT: Class = &[(' ', '~')];
+const PUNCT: Class = &[('!', '/'), (':', '@'), ('[', '`'), ('{', '~')];
+const SPACE: Class =
+    &[('\t', '\t'), ('\n', '\n'), ('\x0B', '\x0B'), ('\x0C', '\x0C'), ('\r', '\r'), (' ', ' ')];
+const UPPER: Class = &[('A', 'Z')];
+const WORD: Class = &[('0', '9'), ('A', 'Z'), ('_', '_'), ('a', 'z')];
+const XDIGIT: Class = &[('0', '9'), ('A', 'F'), ('a', 'f')];
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct GroupMatcher {
     target: Vec<GroupMatcherTarget>,
@@ -304,6 +357,30 @@ impl GroupMatcher {
 
         if inner.len() >= 1 && inner[0] == '-' {
             ts.push(GroupMatcherTarget::Char('-'));
+        }
+
+        if inner.len() >= 3 && (inner[0] == ':' || (inner[0] == '!' && inner[1] == ':')) &&
+           *inner.last().unwrap() == ':' {
+            let inv = inner[0] == '!';
+            let class = {
+                let mut s = String::with_capacity(inner.len() - 2);
+                for &c in &inner[1..inner.len() - 1] {
+                    s.push(c);
+                }
+                s
+            };
+
+            if let Ok(i) = ASCII_CLASSES.binary_search_by(|&(c, _)| c.cmp(&class)) {
+                let class = ASCII_CLASSES[i].1;
+                for &(a, b) in class {
+                    ts.push(GroupMatcherTarget::CharBetween(a, b));
+                }
+            }
+
+            return GroupMatcher {
+                target: ts, // ts can be empty
+                invert: inv,
+            };
         }
 
         while !inner.is_empty() {
@@ -529,6 +606,21 @@ mod tests {
                          MatchLength::Shortest,
                          MatchPosition::Prefix,
                          "abced",
+                         Some(5));
+    }
+
+    #[test]
+    fn test_charclass() {
+        assert_match_eq!("[:digit:]*[:lower:]",
+                         MatchLength::Longest,
+                         MatchPosition::Prefix,
+                         "128Foo",
+                         Some(6));
+
+        assert_match_eq!("[:digit:]*[:lower:]",
+                         MatchLength::Shortest,
+                         MatchPosition::Prefix,
+                         "128Foo",
                          Some(5));
     }
 }
