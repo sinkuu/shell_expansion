@@ -136,7 +136,7 @@ impl Expander {
                             fmts.push(Format::StringLength(param.to_string()));
                         } else if let Some(after_ident) = after_ident {
                             let fs = &inner[after_ident..after_ident + 1];
-                            if starts_with_any(fs, &[':', '-', '+', '?']) {
+                            if starts_with_any(fs, &[':', '-', '+', '?', '=']) {
                                 let param = (&inner[..after_ident]).to_string();
 
                                 let opt = &inner[after_ident..];
@@ -386,5 +386,10 @@ mod tests {
 
         let e = Expander::new(r#"${path%*${nonexistent:-${path#f?o?}}*}"#).unwrap();
         assert_eq!(e.expand(&mut params).unwrap(), "foo/");
+
+        params.insert("utf".to_string(), "試験文字列".to_string());
+        let e = Expander::new(r#"${utf#??}${utf2=代入}"#).unwrap();
+        assert_eq!(e.expand(&mut params).unwrap(), "文字列代入");
+        assert_eq!(params.get("utf2"), Some(&"代入".to_string()));
     }
 }
