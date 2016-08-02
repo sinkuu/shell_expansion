@@ -6,10 +6,10 @@ mod glob;
 
 use glob::{Pattern, MatchLength, MatchPosition};
 
-#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ExpanderError {
     ClosingBracketNotFound,
-    VariableNotFound,
+    ParameterNotSet(Option<String>),
     UnknownEscapeSequence,
     GlobError,
     UnknownPattern,
@@ -21,21 +21,32 @@ impl From<glob::GlobError> for ExpanderError {
     }
 }
 
-
+/// Represents parameter formatting components.
+/// See See http://pubs.opengroup.org/onlinepubs/009604499/utilities/xcu_chap02.html#tag_02_06_02
+/// for specification. (Note: this library doesn't completely follow the spec for now.)
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum Format {
     PlainStr(String),
     PlainChar(char),
-    /// `${parameter}` or `$parameter`
+    /// `${parameter}` or `$parameter`: Substitute `parameter`
     Parameter(String),
-    /// `${parameter-word}`
-    UseDefaultValue(String, Expander),
-    /// `${parameter=word}`
-    AssignDefaultValue(String, Expander),
-    /// `${parameter?word}`
-    IndicateErrorIfUnset(String),
-    /// `${parameter+word}`
-    UseAlternativeValue(String, Expander),
+    /// `${parameter:-word}` or `${parameter-word}`: If `parameter` is unset,
+    /// the expansion of `word` is substituted.
+    ///
+    /// The first `bool` field indicates the existence of a colon.
+    /// If the colon is used, null values are treated as unset.
+    /// The same shall apply to bool fields below.
+    UseDefaultValue(bool, String, Expander),
+    /// `${parameter=word}`: If `parameter` is unset,
+    /// the expansion of `word` is assigned to `parameter`. In all cases
+    /// the value of `parameter` is substituted.
+    AssignDefaultValue(bool, String, Expander),
+    /// `${parameter:?[word]}`, `${parameter?[word]}`: If `paramter` is unset,
+    /// `Expander::expand` returns `ExpanderError::ParameterNotSet` with optional expanded `word`.
+    IndicateErrorIfUnset(bool, String, Option<Expander>),
+    /// `${parameter+word}`: If `paramter` is unset,
+    /// nothing is substituted; otherwise, the expansion of word is substituted.
+    UseAlternativeValue(bool, String, Expander),
     /// `${#parameter}` or `$#parameter`
     StringLength(String),
     /// `${parameter%pat}`, `${parameter%%pat}`, `${parameter#pat}`, `${parameter##pat}`
@@ -48,6 +59,7 @@ pub struct Expander {
 }
 
 impl Expander {
+    /// Compiles the expansion format string.
     pub fn new(s: &str) -> Result<Expander, ExpanderError> {
         let mut fmts = vec![];
 
@@ -126,45 +138,53 @@ impl Expander {
                         let inner = (&s[0..closing]).replace("\\}", "}");
                         s = &s[closing + 1..];
 
-                        fn starts_with_any(s: &str, cs: &[char]) -> bool {
-                            cs.iter().any(|&c| s.starts_with(c))
-                        }
-
                         let after_ident = inner.find(|c: char| !c.is_alphanumeric());
                         if inner.starts_with('#') {
                             let param = &inner[1..];
                             fmts.push(Format::StringLength(param.to_string()));
                         } else if let Some(after_ident) = after_ident {
-                            let fs = &inner[after_ident..after_ident + 1];
-                            if starts_with_any(fs, &[':', '-', '+', '?', '=']) {
-                                let param = (&inner[..after_ident]).to_string();
+                            let fs = (&inner[after_ident..]).chars().next().unwrap();
+                            if [':', '-', '+', '?', '='].contains(&fs) {
+                                let treat_null_as_unset = fs == ':';
 
                                 let opt = &inner[after_ident..];
-                                // ignoreing ':'
-                                let opt = if opt.starts_with(':') {
+                                let opt = if treat_null_as_unset {
                                     &inner[after_ident + 1..]
                                 } else {
                                     opt
                                 };
 
+                                let param = (&inner[..after_ident]).to_string();
                                 let word = &opt[1..];
 
                                 fmts.push(if opt.starts_with('-') {
                                     // use default value
-                                    Format::UseDefaultValue(param, try!(Expander::new(word)))
+                                    Format::UseDefaultValue(treat_null_as_unset,
+                                                            param,
+                                                            try!(Expander::new(word)))
                                 } else if opt.starts_with('=') {
                                     // assign default value
-                                    Format::AssignDefaultValue(param, try!(Expander::new(word)))
+                                    Format::AssignDefaultValue(treat_null_as_unset,
+                                                               param,
+                                                               try!(Expander::new(word)))
                                 } else if opt.starts_with('+') {
                                     // use alternative value
-                                    Format::UseAlternativeValue(param, try!(Expander::new(word)))
+                                    Format::UseAlternativeValue(treat_null_as_unset,
+                                                                param,
+                                                                try!(Expander::new(word)))
                                 } else if opt.starts_with('?') {
                                     // indicate error if unset
-                                    Format::IndicateErrorIfUnset(param)
+                                    Format::IndicateErrorIfUnset(treat_null_as_unset,
+                                                                 param,
+                                                                 if word.is_empty() {
+                                                                     None
+                                                                 } else {
+                                                                     Some(try!(Expander::new(word)))
+                                                                 })
                                 } else {
                                     return Err(ExpanderError::UnknownPattern);
                                 })
-                            } else if starts_with_any(fs, &['#', '%']) {
+                            } else if ['#', '%'].contains(&fs) {
                                 let param = (&inner[..after_ident]).to_string();
                                 let inner = &inner[after_ident..];
 
@@ -227,8 +247,14 @@ impl Expander {
         Ok(Expander { formats: fmts })
     }
 
+    /// Expands the expansion format string using `params` as parameters.
     pub fn expand(&self, params: &mut HashMap<String, String>) -> Result<String, ExpanderError> {
         let mut res = String::new();
+
+        #[inline]
+        fn filter_option<T, F: Fn(&T) -> bool>(o: Option<T>, f: F) -> Option<T> {
+            o.and_then(|val| if f(&val) { Some(val) } else { None })
+        }
 
         for f in &self.formats {
             match *f {
@@ -241,37 +267,47 @@ impl Expander {
                     }
                 }
 
-                Format::UseDefaultValue(ref param, ref default) => {
-                    // FIXME: this could be fixed when non-lexical lifetimes is implemented
-                    if params.contains_key(param) {
+                Format::UseDefaultValue(treat_null_as_unset, ref param, ref default) => {
+                    // FIXME: fix ugly code after non-lexical borrow lands rust
+                    if params.contains_key(param) &&
+                       !(treat_null_as_unset && params.get(param).unwrap().is_empty()) {
                         res.push_str(params.get(param).unwrap());
                     } else {
                         res.push_str(&try!(default.expand(params)));
                     }
                 }
 
-                Format::AssignDefaultValue(ref param, ref default) => {
-                    if params.contains_key(param) {
+                Format::AssignDefaultValue(treat_null_as_unset, ref param, ref default) => {
+                    // FIXME: ditto
+                    if params.contains_key(param) &&
+                       !(treat_null_as_unset && params.get(param).unwrap().is_empty()) {
                         res.push_str(params.get(param).unwrap());
                     } else {
                         let e = try!(default.expand(params));
                         res.push_str(&e);
                         params.insert(param.clone(), e);
                     }
-                    // res.push_str(params.entry(param.clone())
-                    //    .or_insert(try!(default.expand(params))));
                 }
 
-                Format::IndicateErrorIfUnset(ref param) => {
-                    if let Some(v) = params.get(param) {
-                        res.push_str(v);
+                Format::IndicateErrorIfUnset(treat_null_as_unset, ref param, ref error) => {
+                    // FIXME: ditto
+                    if params.contains_key(param) &&
+                       !(treat_null_as_unset && params.get(param).unwrap().is_empty()) {
+                        res.push_str(params.get(param).unwrap());
                     } else {
-                        return Err(ExpanderError::VariableNotFound);
+                        let msg = error.clone().map(|e| e.expand(params));
+                        let msg = match msg {
+                            Some(Err(e)) => return Err(e.into()),
+                            Some(Ok(e)) => Some(e),
+                            None => None,
+                        };
+                        return Err(ExpanderError::ParameterNotSet(msg));
                     }
                 }
 
-                Format::UseAlternativeValue(ref param, ref alt) => {
-                    if let Some(_) = params.get(param) {
+                Format::UseAlternativeValue(treat_null_as_unset, ref param, ref alt) => {
+                    if let Some(_) = filter_option(params.get(param),
+                                                   |v| !treat_null_as_unset || !v.is_empty()) {
                         res.push_str(&try!(alt.expand(params)));
                     }
                 }
@@ -357,7 +393,11 @@ mod tests {
         assert_eq!(params.get("baz").unwrap(), "assign");
 
         let e = Expander::new("${qux:?}").unwrap().expand(&mut params);
-        assert_eq!(e, Err(super::ExpanderError::VariableNotFound));
+        assert_eq!(e, Err(super::ExpanderError::ParameterNotSet(None)));
+
+        let e = Expander::new("${qux:?${nonexistent:-error text}}").unwrap().expand(&mut params);
+        assert_eq!(e,
+                   Err(super::ExpanderError::ParameterNotSet(Some("error text".into()))));
 
         let e = Expander::new("${qux+alt}").unwrap();
         assert_eq!(e.expand(&mut params).unwrap(), "");
@@ -391,5 +431,28 @@ mod tests {
         let e = Expander::new(r#"${utf#??}${utf2=代入}"#).unwrap();
         assert_eq!(e.expand(&mut params).unwrap(), "文字列代入");
         assert_eq!(params.get("utf2"), Some(&"代入".to_string()));
+    }
+
+    // See http://pubs.opengroup.org/onlinepubs/009604499/utilities/xcu_chap02.html#tag_02_06_02
+    // for these clutters.
+    #[test]
+    fn test_null_unset() {
+        let mut params = HashMap::new();
+        params.insert("foo".to_string(), "test".to_string());
+        params.insert("bar".to_string(), "".to_string());
+
+        let e = Expander::new(r#"${foo:-a}/${foo-a}/${bar:-a}/${bar-a}"#).unwrap();
+        assert_eq!(e.expand(&mut params).unwrap(), "test/test/a/");
+
+        let e = Expander::new(r#"${qux:=a}${qux=b}"#).unwrap();
+        assert_eq!(e.expand(&mut params).unwrap(), "aa");
+        assert_eq!(params.get("qux"), Some(&"a".into()));
+
+        let e = Expander::new(r#"${bar?a}${bar:?b}"#).unwrap();
+        assert_eq!(e.expand(&mut params),
+                   Err(ExpanderError::ParameterNotSet(Some("b".into()))));
+
+        let e = Expander::new(r#"${bar:+a}${bar+b}"#).unwrap();
+        assert_eq!(e.expand(&mut params).unwrap(), "b");
     }
 }
