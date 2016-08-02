@@ -367,9 +367,7 @@ impl GroupMatcher {
             ts.push(GroupMatcherTarget::Char('-'));
         }
 
-        if inner.len() >= 3 && (inner[0] == ':' || (inner[0] == '!' && inner[1] == ':')) &&
-           *inner.last().unwrap() == ':' {
-            let inv = inner[0] == '!';
+        if inner.len() >= 3 && inner[0] == ':' && *inner.last().unwrap() == ':' {
             let class = {
                 let mut s = String::with_capacity(inner.len() - 2);
                 for &c in &inner[1..inner.len() - 1] {
@@ -625,16 +623,16 @@ mod tests {
 
     #[test]
     fn test_charclass() {
-        assert_match_eq!("[:digit:]*[:lower:]",
-                         MatchLength::Longest,
-                         MatchPosition::Prefix,
-                         "128Foo",
-                         Some(6));
-
-        assert_match_eq!("[:digit:]*[:lower:]",
+        assert_match_eq!("[:digit:]*[!:upper:][:lower:]",
                          MatchLength::Shortest,
                          MatchPosition::Prefix,
-                         "128Foo",
-                         Some(5));
+                         "128Fooo",
+                         Some(6));
+
+        assert_match_eq!("[:digit:]*[:lower:][!:lower:]",
+                         MatchLength::Longest,
+                         MatchPosition::Prefix,
+                         "128FoFoo",
+                         Some(6));
     }
 }
