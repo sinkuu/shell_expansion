@@ -177,12 +177,18 @@ fn search_matches(matchers: &[Matcher],
     } else if !(num_many > 0 && span.is_none()) && (matched == 0 || num_many == 0) {
         None
     } else {
+        let matchers = &matchers[matched..];
+
+        // number of matchers that match exactly a single char
+        let char_matchers = matchers.len() - matchers.iter().filter(|m| !m.is_many()).count();
+        let many_limit = input.len() - char_matchers;
+
         match matchlen {
             MatchLength::Longest => {
-                (0..input.len() + 1)
+                (0..many_limit + 1)
                     .rev()
                     .filter_map(|i| {
-                        search_matches(&matchers[matched..],
+                        search_matches(matchers,
                                        num_many - if many_matched { 1 } else { 0 },
                                        Some(i),
                                        matchlen,
@@ -193,9 +199,9 @@ fn search_matches(matchers: &[Matcher],
             }
 
             MatchLength::Shortest => {
-                (0..input.len() + 1)
+                (0..many_limit + 1)
                     .filter_map(|i| {
-                        search_matches(&matchers[matched..],
+                        search_matches(matchers,
                                        num_many - if many_matched { 1 } else { 0 },
                                        Some(i),
                                        matchlen,
