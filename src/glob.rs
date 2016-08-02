@@ -157,7 +157,9 @@ impl Pattern {
 
         let num_many = self.matchers.iter().filter(|&m| m == &Matcher::ManyChar).count();
 
-        search_matches(&self.matchers, num_many, None, self.len, &chars)
+        search_matches(&self.matchers, num_many, None, self.len, &chars).map(|len_matched| {
+            (&chars[..len_matched]).iter().map(|c| c.len_utf8()).fold(0, |acc, x| acc + x)
+        })
     }
 }
 
@@ -607,6 +609,12 @@ mod tests {
                          MatchPosition::Prefix,
                          "abced",
                          Some(5));
+
+        assert_match_eq!("あま*夏",
+                         MatchLength::Shortest,
+                         MatchPosition::Prefix,
+                         "あまくて美味しい甘夏みかん",
+                         Some("あまくて美味しい甘夏".len()));
     }
 
     #[test]
