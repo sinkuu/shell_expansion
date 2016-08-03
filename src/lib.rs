@@ -1,25 +1,54 @@
 //! Shell-ish parameter expansion.
 
 use std::collections::HashMap;
+use std::borrow::Cow;
 
 mod glob;
-
 use glob::{Pattern, MatchLength, MatchPosition};
 
+
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum ExpanderError {
+pub enum ParseError {
     ClosingBracketNotFound,
-    ParameterNotSet(Option<String>),
-    UnknownEscapeSequence,
     GlobError,
+    UnknownEscapeSequence,
     UnknownPattern,
 }
 
-impl From<glob::GlobError> for ExpanderError {
+
+impl From<glob::GlobError> for ParseError {
+    fn from(_: glob::GlobError) -> Self {
+        ParseError::GlobError
+    }
+}
+
+#[derive(Debug)]
+pub enum ExpanderError<CmdError = std::io::Error, ArithError = ()> {
+    ParameterNotSet(Option<String>),
+    GlobError,
+    CmdError(CmdError),
+    ArithError(ArithError),
+}
+
+impl<CmdError, ArithError> From<glob::GlobError> for ExpanderError<CmdError, ArithError> {
     fn from(_: glob::GlobError) -> Self {
         ExpanderError::GlobError
     }
 }
+
+impl<ArithError: PartialEq> PartialEq for ExpanderError<std::io::Error, ArithError> {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (&ExpanderError::ParameterNotSet(ref a), &ExpanderError::ParameterNotSet(ref b)) => a == b,
+            (&ExpanderError::GlobError, &ExpanderError::GlobError) => true,
+            (&ExpanderError::CmdError(_), _) => panic!("std::io::Error can't be compared"),
+            (_, &ExpanderError::CmdError(_)) => panic!("std::io::Error can't be compared"),
+            (&ExpanderError::ArithError(ref a), &ExpanderError::ArithError(ref b)) => a == b,
+            (_, _) => false,
+        }
+    }
+}
+
 
 /// Represents parameter formatting components.
 /// See See http://pubs.opengroup.org/onlinepubs/009604499/utilities/xcu_chap02.html#tag_02_06_02
@@ -53,6 +82,7 @@ enum Format {
     RemovePattern(String, Expander, MatchLength, MatchPosition),
 }
 
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Expander {
     formats: Vec<Format>,
@@ -60,7 +90,7 @@ pub struct Expander {
 
 impl Expander {
     /// Compiles the expansion format string.
-    pub fn new(s: &str) -> Result<Expander, ExpanderError> {
+    pub fn new(s: &str) -> Result<Expander, ParseError> {
         let mut fmts = vec![];
 
         let mut s = s;
@@ -91,7 +121,7 @@ impl Expander {
                         let mut closing = if let Some(c) = s.find('}') {
                             c
                         } else {
-                            return Err(ExpanderError::ClosingBracketNotFound);
+                            return Err(ParseError::ClosingBracketNotFound);
                         };
 
                         let mut rem = s.char_indices().peekable();
@@ -99,12 +129,12 @@ impl Expander {
                         while level > 0 {
                             match rem.next() {
                                 None => {
-                                    return Err(ExpanderError::ClosingBracketNotFound);
+                                    return Err(ParseError::ClosingBracketNotFound);
                                 }
 
                                 Some((_, '\\')) => {
                                     match rem.next() {
-                                        None => return Err(ExpanderError::ClosingBracketNotFound),
+                                        None => return Err(ParseError::ClosingBracketNotFound),
                                         Some((_, '}')) => (),
                                         Some((_, '$')) => {
                                             match rem.peek() {
@@ -114,13 +144,13 @@ impl Expander {
                                                 }
                                             }
                                         }
-                                        Some(_) => return Err(ExpanderError::UnknownEscapeSequence),
+                                        Some(_) => return Err(ParseError::UnknownEscapeSequence),
                                     }
                                 }
 
                                 Some((_, '$')) => {
                                     match rem.next() {
-                                        None => return Err(ExpanderError::ClosingBracketNotFound),
+                                        None => return Err(ParseError::ClosingBracketNotFound),
                                         Some((_, '{')) => level += 1,
                                         Some(_) => (),
                                     }
@@ -182,7 +212,7 @@ impl Expander {
                                                                      Some(try!(Expander::new(word)))
                                                                  })
                                 } else {
-                                    return Err(ExpanderError::UnknownPattern);
+                                    return Err(ParseError::UnknownPattern);
                                 })
                             } else if ['#', '%'].contains(&fs) {
                                 let param = (&inner[..after_ident]).to_string();
@@ -198,7 +228,7 @@ impl Expander {
                                 } else if inner.starts_with('%') {
                                     (&inner[1..], MatchLength::Shortest, MatchPosition::Suffix)
                                 } else {
-                                    return Err(ExpanderError::UnknownPattern);
+                                    return Err(ParseError::UnknownPattern);
                                 };
                                 // let pat = try!(Pattern::new(pat, len, pos));
                                 fmts.push(Format::RemovePattern(param,
@@ -210,7 +240,7 @@ impl Expander {
                             if inner.chars().all(|c| c.is_alphanumeric()) {
                                 fmts.push(Format::Parameter(inner.as_str().to_string()));
                             } else {
-                                return Err(ExpanderError::UnknownPattern);
+                                return Err(ParseError::UnknownPattern);
                             }
                         }
                     } else {
@@ -248,7 +278,7 @@ impl Expander {
     }
 
     /// Expands the expansion format string using `params` as parameters.
-    pub fn expand(&self, params: &mut HashMap<String, String>) -> Result<String, ExpanderError> {
+    pub fn expand<CmdError, ArithError, S: ShellEnvironment<CmdError, ArithError>>(&self, params: &mut S) -> Result<String, ExpanderError<CmdError, ArithError>> {
         let mut res = String::new();
 
         #[inline]
@@ -262,16 +292,16 @@ impl Expander {
                 Format::PlainStr(ref s) => res.push_str(s),
 
                 Format::Parameter(ref param) => {
-                    if let Some(v) = params.get(param) {
-                        res.push_str(v);
+                    if let Some(v) = params.get_parameter(param) {
+                        res.push_str(&v);
                     }
                 }
 
                 Format::UseDefaultValue(treat_null_as_unset, ref param, ref default) => {
                     // FIXME: fix ugly code after non-lexical borrow lands rust
-                    if params.contains_key(param) &&
-                       !(treat_null_as_unset && params.get(param).unwrap().is_empty()) {
-                        res.push_str(params.get(param).unwrap());
+                    if params.has_parameter(param) &&
+                       !(treat_null_as_unset && params.get_parameter(param).unwrap().is_empty()) {
+                        res.push_str(&params.get_parameter(param).unwrap());
                     } else {
                         res.push_str(&try!(default.expand(params)));
                     }
@@ -279,21 +309,21 @@ impl Expander {
 
                 Format::AssignDefaultValue(treat_null_as_unset, ref param, ref default) => {
                     // FIXME: ditto
-                    if params.contains_key(param) &&
-                       !(treat_null_as_unset && params.get(param).unwrap().is_empty()) {
-                        res.push_str(params.get(param).unwrap());
+                    if params.has_parameter(param) &&
+                       !(treat_null_as_unset && params.get_parameter(param).unwrap().is_empty()) {
+                        res.push_str(&params.get_parameter(param).unwrap());
                     } else {
                         let e = try!(default.expand(params));
                         res.push_str(&e);
-                        params.insert(param.clone(), e);
+                        params.set_parameter(param.clone().into(), e.into());
                     }
                 }
 
                 Format::IndicateErrorIfUnset(treat_null_as_unset, ref param, ref error) => {
                     // FIXME: ditto
-                    if params.contains_key(param) &&
-                       !(treat_null_as_unset && params.get(param).unwrap().is_empty()) {
-                        res.push_str(params.get(param).unwrap());
+                    if params.has_parameter(param) &&
+                       !(treat_null_as_unset && params.get_parameter(param).unwrap().is_empty()) {
+                        res.push_str(&params.get_parameter(param).unwrap());
                     } else {
                         let msg = error.clone().map(|e| e.expand(params));
                         let msg = match msg {
@@ -306,23 +336,23 @@ impl Expander {
                 }
 
                 Format::UseAlternativeValue(treat_null_as_unset, ref param, ref alt) => {
-                    if let Some(_) = filter_option(params.get(param),
+                    if let Some(_) = filter_option(params.get_parameter(param),
                                                    |v| !treat_null_as_unset || !v.is_empty()) {
                         res.push_str(&try!(alt.expand(params)));
                     }
                 }
 
                 Format::StringLength(ref param) => {
-                    if let Some(v) = params.get(param) {
+                    if let Some(v) = params.get_parameter(param) {
                         res.push_str(&v.chars().count().to_string());
                     }
                 }
 
                 Format::RemovePattern(ref param, ref pat, len, pos) => {
                     let e = try!(pat.expand(params));
-                    if let Some(v) = params.get(param) {
+                    if let Some(v) = params.get_parameter(param) {
                         let pat = try!(Pattern::new(&e, len, pos));
-                        if let Some(i) = pat.matches(v) {
+                        if let Some(i) = pat.matches(&v) {
                             match pat.pos {
                                 MatchPosition::Prefix => {
                                     res.push_str(&v[i..]);
@@ -333,7 +363,7 @@ impl Expander {
                                 }
                             }
                         } else {
-                            res.push_str(v);
+                            res.push_str(&v);
                         }
                     }
                 }
@@ -341,6 +371,74 @@ impl Expander {
         }
 
         Ok(res)
+    }
+}
+
+/// Special parameters described in
+/// [Shell Command Language - 2.5.2 Special Parameters](http://pubs.opengroup.org/onlinepubs/009604499/utilities/xcu_chap02.html#tag_02_05_02)
+pub enum SpecialParameter {
+    // NOTE: support `${*}`, `${#}` etc. as well
+    
+    /// `$*`
+    AllParameters,
+    /// `$@`
+    AllParametersQuoted,
+    /// `$#`
+    NumberOfParameters,
+    /// `$?`
+    ExitStatus,
+    /// `$-`
+    OptionFlags,
+    /// `$$`
+    PID,
+    /// `$!`
+    BackgroundPID,
+    /// `$0`
+    Name,
+    /// `$n` (n is a integer larger than zero)
+    Parameter(i32),
+}
+
+pub trait ShellEnvironment<CmdError=std::io::Error, ArithError=()> {
+    fn get_parameter<'a>(&self, name: &str) -> Option<Cow<'a, str>>;
+
+    fn set_parameter<'a>(&mut self, name: Cow<'a, str>, value: Cow<'a, str>);
+
+    fn special_parameter<'a>(&self, s: SpecialParameter) -> Option<Cow<'a, str>>;
+
+    fn command_substition<'a>(&mut self, command: &str) -> Result<Cow<'a, str>, CmdError>;
+
+    fn arithmetic_expansion<'a>(&mut self, expression: &str) -> Cow<'a, str>;
+
+    fn has_parameter(&self, name: &str) -> bool {
+        if let Some(_) = self.get_parameter(name) { true } else { false }
+    }
+}
+
+impl ShellEnvironment for HashMap<String, String> {
+    fn get_parameter<'a>(&self, name: &str) -> Option<Cow<'a, str>> {
+        self.get(name).map(|s| s.clone().into())
+    }
+
+    #[inline]
+    fn has_parameter(&self, name: &str) -> bool {
+        self.contains_key(name)
+    }
+
+    fn set_parameter<'a>(&mut self, name: Cow<'a, str>, value: Cow<'a, str>) {
+        self.insert(name.into_owned(), value.into_owned());
+    }
+
+    fn special_parameter<'a>(&self, _s: SpecialParameter) -> Option<Cow<'a, str>> {
+        unimplemented!();
+    }
+
+    fn command_substition<'a>(&mut self, _command: &str) -> Result<Cow<'a, str>, std::io::Error> {
+        panic!("Command substitution doesn't work with HashMap");
+    }
+
+    fn arithmetic_expansion<'a>(&mut self, _expression: &str) -> Cow<'a, str> {
+        panic!("Arithmetic expansion doesn't work with HashMap");
     }
 }
 
@@ -428,13 +526,12 @@ mod tests {
         assert_eq!(e.expand(&mut params).unwrap(), "foo/");
 
         params.insert("utf".to_string(), "試験文字列".to_string());
-        let e = Expander::new(r#"${utf#??}${utf2=代入}"#).unwrap();
+        let e = Expander::new(r#"${utf#??}${変数=代入}"#).unwrap();
         assert_eq!(e.expand(&mut params).unwrap(), "文字列代入");
-        assert_eq!(params.get("utf2"), Some(&"代入".to_string()));
+        assert_eq!(params.get("変数"), Some(&"代入".to_string()));
     }
 
     // See http://pubs.opengroup.org/onlinepubs/009604499/utilities/xcu_chap02.html#tag_02_06_02
-    // for these clutters.
     #[test]
     fn test_null_unset() {
         let mut params = HashMap::new();

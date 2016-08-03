@@ -614,7 +614,7 @@ mod tests {
                          "abced",
                          Some(5));
 
-        assert_match_eq!("あま*夏",
+        assert_match_eq!("あま*味*夏",
                          MatchLength::Shortest,
                          MatchPosition::Prefix,
                          "あまくて美味しい甘夏みかん",
