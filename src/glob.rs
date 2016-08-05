@@ -4,6 +4,7 @@ pub enum GlobError {
     StrayBracket,
 }
 
+/// Compiled glob pattern.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Pattern {
     pub len: MatchLength,

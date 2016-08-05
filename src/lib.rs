@@ -39,7 +39,9 @@ impl<CmdError, ArithError> From<glob::GlobError> for ExpanderError<CmdError, Ari
 impl<ArithError: PartialEq> PartialEq for ExpanderError<std::io::Error, ArithError> {
     fn eq(&self, other: &Self) -> bool {
         match (self, other) {
-            (&ExpanderError::ParameterNotSet(ref a), &ExpanderError::ParameterNotSet(ref b)) => a == b,
+            (&ExpanderError::ParameterNotSet(ref a), &ExpanderError::ParameterNotSet(ref b)) => {
+                a == b
+            }
             (&ExpanderError::GlobError, &ExpanderError::GlobError) => true,
             (&ExpanderError::CmdError(_), _) => panic!("std::io::Error can't be compared"),
             (_, &ExpanderError::CmdError(_)) => panic!("std::io::Error can't be compared"),
@@ -51,7 +53,7 @@ impl<ArithError: PartialEq> PartialEq for ExpanderError<std::io::Error, ArithErr
 
 
 /// Represents parameter formatting components.
-/// See See http://pubs.opengroup.org/onlinepubs/009604499/utilities/xcu_chap02.html#tag_02_06_02
+/// See http://pubs.opengroup.org/onlinepubs/009604499/utilities/xcu_chap02.html#tag_02_06_02
 /// for specification. (Note: this library doesn't completely follow the spec for now.)
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum Format {
@@ -71,7 +73,8 @@ enum Format {
     /// the value of `parameter` is substituted.
     AssignDefaultValue(bool, String, Expander),
     /// `${parameter:?[word]}`, `${parameter?[word]}`: If `paramter` is unset,
-    /// `Expander::expand` returns `ExpanderError::ParameterNotSet` with optional expanded `word`.
+    /// `Expander::expand` returns `ExpanderError::ParameterNotSet`
+    /// with optional expanded `word`.
     IndicateErrorIfUnset(bool, String, Option<Expander>),
     /// `${parameter+word}`: If `paramter` is unset,
     /// nothing is substituted; otherwise, the expansion of word is substituted.
@@ -90,26 +93,23 @@ pub struct Expander {
 
 impl Expander {
     /// Compiles the expansion format string.
-    pub fn new(s: &str) -> Result<Expander, ParseError> {
+    pub fn new(mut s: &str) -> Result<Expander, ParseError> {
         let mut fmts = vec![];
 
-        let mut s = s;
-
         'outer: while !s.is_empty() {
-            match (s.find("\\$"), s.find('$')) {
-                (_, None) => {
+            match s.find('$') {
+                None => {
                     fmts.push(Format::PlainStr(s.to_string()));
                     break 'outer;
                 }
-                (escaped_dollar, Some(idx_dollar)) => {
-                    if let Some(idx_escaped_dollar) = escaped_dollar {
-                        if idx_escaped_dollar + 1 == idx_dollar {
-                            let mut string = (&s[0..idx_escaped_dollar]).to_string();
-                            string.push('$');
-                            fmts.push(Format::PlainStr(string));
-                            s = &s[idx_dollar + 1..];
-                            continue 'outer;
-                        }
+
+                Some(idx_dollar) => {
+                    if (&s[..idx_dollar]).ends_with('\\') {
+                        let mut string = (&s[0..idx_dollar - 1]).to_string();
+                        string.push('$');
+                        fmts.push(Format::PlainStr(string));
+                        s = &s[idx_dollar + 1..];
+                        continue 'outer;
                     }
 
                     fmts.push(Format::PlainStr((&s[0..idx_dollar]).to_string()));
@@ -278,7 +278,10 @@ impl Expander {
     }
 
     /// Expands the expansion format string using `params` as parameters.
-    pub fn expand<CmdError, ArithError, S: ShellEnvironment<CmdError, ArithError>>(&self, params: &mut S) -> Result<String, ExpanderError<CmdError, ArithError>> {
+    pub fn expand<CmdError, ArithError, S: ShellEnvironment<CmdError, ArithError>>
+        (&self,
+         params: &mut S)
+         -> Result<String, ExpanderError<CmdError, ArithError>> {
         let mut res = String::new();
 
         #[inline]
@@ -315,7 +318,7 @@ impl Expander {
                     } else {
                         let e = try!(default.expand(params));
                         res.push_str(&e);
-                        params.set_parameter(param.clone().into(), e.into());
+                        params.set_parameter(param.clone(), e);
                     }
                 }
 
@@ -375,10 +378,10 @@ impl Expander {
 }
 
 /// Special parameters described in
-/// [Shell Command Language - 2.5.2 Special Parameters](http://pubs.opengroup.org/onlinepubs/009604499/utilities/xcu_chap02.html#tag_02_05_02)
+/// [Shell Command Language - 2.5.2 Special Parameters]
+/// (http://pubs.opengroup.org/onlinepubs/009604499/utilities/xcu_chap02.html#tag_02_05_02)
 pub enum SpecialParameter {
     // NOTE: support `${*}`, `${#}` etc. as well
-    
     /// `$*`
     AllParameters,
     /// `$@`
@@ -399,10 +402,10 @@ pub enum SpecialParameter {
     Parameter(i32),
 }
 
-pub trait ShellEnvironment<CmdError=std::io::Error, ArithError=()> {
+pub trait ShellEnvironment<CmdError = std::io::Error, ArithError = ()> {
     fn get_parameter<'a>(&self, name: &str) -> Option<Cow<'a, str>>;
 
-    fn set_parameter<'a>(&mut self, name: Cow<'a, str>, value: Cow<'a, str>);
+    fn set_parameter<'a>(&mut self, name: String, value: String);
 
     fn special_parameter<'a>(&self, s: SpecialParameter) -> Option<Cow<'a, str>>;
 
@@ -411,7 +414,7 @@ pub trait ShellEnvironment<CmdError=std::io::Error, ArithError=()> {
     fn arithmetic_expansion<'a>(&mut self, expression: &str) -> Cow<'a, str>;
 
     fn has_parameter(&self, name: &str) -> bool {
-        if let Some(_) = self.get_parameter(name) { true } else { false }
+        self.get_parameter(name).is_some()
     }
 }
 
@@ -425,8 +428,8 @@ impl ShellEnvironment for HashMap<String, String> {
         self.contains_key(name)
     }
 
-    fn set_parameter<'a>(&mut self, name: Cow<'a, str>, value: Cow<'a, str>) {
-        self.insert(name.into_owned(), value.into_owned());
+    fn set_parameter<'a>(&mut self, name: String, value: String) {
+        self.insert(name, value);
     }
 
     fn special_parameter<'a>(&self, _s: SpecialParameter) -> Option<Cow<'a, str>> {
