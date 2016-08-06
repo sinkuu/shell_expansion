@@ -2,6 +2,8 @@
 
 use std::collections::HashMap;
 use std::borrow::Cow;
+use std::error::Error;
+use std::fmt;
 
 mod glob;
 use glob::{Pattern, MatchLength, MatchPosition};
@@ -10,29 +12,46 @@ use glob::{Pattern, MatchLength, MatchPosition};
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ParseError {
     ClosingBracketNotFound,
-    GlobError,
+    IllegalGlob,
     UnknownEscapeSequence,
     UnknownPattern,
+}
+
+impl Error for ParseError {
+    fn description(&self) -> &str {
+        match *self {
+            ParseError::ClosingBracketNotFound => "no closing bracket in expansion format pattern",
+            ParseError::IllegalGlob => "illegal glob pattern",
+            ParseError::UnknownEscapeSequence => "unknown escape sequence",
+            ParseError::UnknownPattern => "unknown expansion pattern",
+        }
+    }
+}
+
+impl fmt::Display for ParseError {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "{}", self.description())
+    }
 }
 
 
 impl From<glob::GlobError> for ParseError {
     fn from(_: glob::GlobError) -> Self {
-        ParseError::GlobError
+        ParseError::IllegalGlob
     }
 }
 
 #[derive(Debug)]
 pub enum ExpanderError<CmdError = std::io::Error, ArithError = ()> {
     ParameterNotSet(Option<String>),
-    GlobError,
-    CmdError(CmdError),
-    ArithError(ArithError),
+    IllegalGlob,
+    Cmd(CmdError),
+    Arith(ArithError),
 }
 
 impl<CmdError, ArithError> From<glob::GlobError> for ExpanderError<CmdError, ArithError> {
     fn from(_: glob::GlobError) -> Self {
-        ExpanderError::GlobError
+        ExpanderError::IllegalGlob
     }
 }
 
@@ -42,10 +61,10 @@ impl<ArithError: PartialEq> PartialEq for ExpanderError<std::io::Error, ArithErr
             (&ExpanderError::ParameterNotSet(ref a), &ExpanderError::ParameterNotSet(ref b)) => {
                 a == b
             }
-            (&ExpanderError::GlobError, &ExpanderError::GlobError) => true,
-            (&ExpanderError::CmdError(_), _) => panic!("std::io::Error can't be compared"),
-            (_, &ExpanderError::CmdError(_)) => panic!("std::io::Error can't be compared"),
-            (&ExpanderError::ArithError(ref a), &ExpanderError::ArithError(ref b)) => a == b,
+            (&ExpanderError::IllegalGlob, &ExpanderError::IllegalGlob) => true,
+            (&ExpanderError::Cmd(_), _) => panic!("std::io::Error can't be compared"),
+            (_, &ExpanderError::Cmd(_)) => panic!("std::io::Error can't be compared"),
+            (&ExpanderError::Arith(ref a), &ExpanderError::Arith(ref b)) => a == b,
             (_, _) => false,
         }
     }
