@@ -99,7 +99,7 @@ enum Format {
     /// nothing is substituted; otherwise, the expansion of word is substituted.
     UseAlternativeValue(bool, String, Expander),
     /// `${#parameter}` or `$#parameter`
-    StringLength(String),
+    StringLength(Box<Format>),
     /// `${parameter%pat}`, `${parameter%%pat}`, `${parameter#pat}`, `${parameter##pat}`
     RemovePattern(String, Expander, MatchLength, MatchPosition),
 }
@@ -187,81 +187,7 @@ impl Expander {
                         let inner = (&s[0..closing]).replace("\\}", "}");
                         s = &s[closing + 1..];
 
-                        let after_ident = inner.find(|c: char| !c.is_alphanumeric());
-                        if inner.starts_with('#') {
-                            let param = &inner[1..];
-                            fmts.push(Format::StringLength(param.to_string()));
-                        } else if let Some(after_ident) = after_ident {
-                            let fs = (&inner[after_ident..]).chars().next().unwrap();
-                            if [':', '-', '+', '?', '='].contains(&fs) {
-                                let treat_null_as_unset = fs == ':';
-
-                                let opt = &inner[after_ident..];
-                                let opt = if treat_null_as_unset {
-                                    &inner[after_ident + 1..]
-                                } else {
-                                    opt
-                                };
-
-                                let param = (&inner[..after_ident]).to_string();
-                                let word = &opt[1..];
-
-                                fmts.push(if opt.starts_with('-') {
-                                    // use default value
-                                    Format::UseDefaultValue(treat_null_as_unset,
-                                                            param,
-                                                            try!(Expander::new(word)))
-                                } else if opt.starts_with('=') {
-                                    // assign default value
-                                    Format::AssignDefaultValue(treat_null_as_unset,
-                                                               param,
-                                                               try!(Expander::new(word)))
-                                } else if opt.starts_with('+') {
-                                    // use alternative value
-                                    Format::UseAlternativeValue(treat_null_as_unset,
-                                                                param,
-                                                                try!(Expander::new(word)))
-                                } else if opt.starts_with('?') {
-                                    // indicate error if unset
-                                    Format::IndicateErrorIfUnset(treat_null_as_unset,
-                                                                 param,
-                                                                 if word.is_empty() {
-                                                                     None
-                                                                 } else {
-                                                                     Some(try!(Expander::new(word)))
-                                                                 })
-                                } else {
-                                    return Err(ParseError::UnknownPattern);
-                                })
-                            } else if ['#', '%'].contains(&fs) {
-                                let param = (&inner[..after_ident]).to_string();
-                                let inner = &inner[after_ident..];
-
-
-                                let (pat, len, pos) = if inner.starts_with("##") {
-                                    (&inner[2..], MatchLength::Longest, MatchPosition::Prefix)
-                                } else if inner.starts_with('#') {
-                                    (&inner[1..], MatchLength::Shortest, MatchPosition::Prefix)
-                                } else if inner.starts_with("%%") {
-                                    (&inner[2..], MatchLength::Longest, MatchPosition::Suffix)
-                                } else if inner.starts_with('%') {
-                                    (&inner[1..], MatchLength::Shortest, MatchPosition::Suffix)
-                                } else {
-                                    return Err(ParseError::UnknownPattern);
-                                };
-                                // let pat = try!(Pattern::new(pat, len, pos));
-                                fmts.push(Format::RemovePattern(param,
-                                                                try!(Expander::new(pat)),
-                                                                len,
-                                                                pos));
-                            }
-                        } else {
-                            if inner.chars().all(|c| c.is_alphanumeric()) {
-                                fmts.push(Format::Parameter(inner.as_str().to_string()));
-                            } else {
-                                return Err(ParseError::UnknownPattern);
-                            }
-                        }
+                        fmts.push(try!(Expander::parse_brace_pattern(inner)));
                     } else {
                         let put_len = if s.starts_with('#') {
                             s = &s[1..];
@@ -282,7 +208,7 @@ impl Expander {
 
                         let v = (&s[0..e]).to_string();
                         if put_len {
-                            fmts.push(Format::StringLength(v))
+                            fmts.push(Format::StringLength(Box::new(Format::Parameter(v))))
                         } else {
                             fmts.push(Format::Parameter(v));
                         }
@@ -294,6 +220,86 @@ impl Expander {
         }
 
         Ok(Expander { formats: fmts })
+    }
+
+    fn parse_brace_pattern(inner: String) -> Result<Format, ParseError> {
+        let after_ident = inner.find(|c: char| !c.is_alphanumeric());
+
+        if inner.starts_with('#') {
+            let param = &inner[1..];
+            Ok(Format::StringLength(
+                Box::new(try!(Expander::parse_brace_pattern(param.to_string())))))
+        } else if let Some(after_ident) = after_ident {
+            let fs = (&inner[after_ident..]).chars().next().unwrap();
+            if [':', '-', '+', '?', '='].contains(&fs) {
+                let treat_null_as_unset = fs == ':';
+
+                let opt = &inner[after_ident..];
+                let opt = if treat_null_as_unset {
+                    &inner[after_ident + 1..]
+                } else {
+                    opt
+                };
+
+                let param = (&inner[..after_ident]).to_string();
+                let word = &opt[1..];
+
+                if opt.starts_with('-') {
+                    // use default value
+                    Ok(Format::UseDefaultValue(treat_null_as_unset,
+                                               param,
+                                               try!(Expander::new(word))))
+                } else if opt.starts_with('=') {
+                    // assign default value
+                    Ok(Format::AssignDefaultValue(treat_null_as_unset,
+                                                  param,
+                                                  try!(Expander::new(word))))
+                } else if opt.starts_with('+') {
+                    // use alternative value
+                    Ok(Format::UseAlternativeValue(treat_null_as_unset,
+                                                   param,
+                                                   try!(Expander::new(word))))
+                } else if opt.starts_with('?') {
+                    // indicate error if unset
+                    Ok(Format::IndicateErrorIfUnset(treat_null_as_unset,
+                                                    param,
+                                                    if word.is_empty() {
+                                                        None
+                                                    } else {
+                                                        Some(try!(Expander::new(word)))
+                                                    }))
+                } else {
+                    Err(ParseError::UnknownPattern)
+                }
+            } else if ['#', '%'].contains(&fs) {
+                let param = (&inner[..after_ident]).to_string();
+                let inner = &inner[after_ident..];
+
+
+                let (pat, len, pos) = if inner.starts_with("##") {
+                    (&inner[2..], MatchLength::Longest, MatchPosition::Prefix)
+                } else if inner.starts_with('#') {
+                    (&inner[1..], MatchLength::Shortest, MatchPosition::Prefix)
+                } else if inner.starts_with("%%") {
+                    (&inner[2..], MatchLength::Longest, MatchPosition::Suffix)
+                } else if inner.starts_with('%') {
+                    (&inner[1..], MatchLength::Shortest, MatchPosition::Suffix)
+                } else {
+                    return Err(ParseError::UnknownPattern);
+                };
+
+                // let pat = try!(Pattern::new(pat, len, pos));
+                Ok(Format::RemovePattern(param, try!(Expander::new(pat)), len, pos))
+            } else {
+                Err(ParseError::UnknownPattern)
+            }
+        } else {
+            if inner.chars().all(|c| c.is_alphanumeric()) {
+                Ok(Format::Parameter(inner.as_str().to_string()))
+            } else {
+                Err(ParseError::UnknownPattern)
+            }
+        }
     }
 
     /// Expands the expansion format string using `params` as parameters.
@@ -364,10 +370,9 @@ impl Expander {
                     }
                 }
 
-                Format::StringLength(ref param) => {
-                    if let Some(v) = params.get_parameter(param) {
-                        res.push_str(&v.chars().count().to_string());
-                    }
+                Format::StringLength(ref f) => {
+                    let e = Expander { formats: vec![*f.clone()] };
+                    res.push_str(&(try!(e.expand(params))).chars().count().to_string());
                 }
 
                 Format::RemovePattern(ref param, ref pat, len, pos) => {
@@ -490,6 +495,9 @@ mod tests {
         let e = Expander::new("num is ${#num} chars long, num is $#num chars long! $#num").unwrap();
         assert_eq!(e.expand(&mut params).unwrap(),
                    "num is 8 chars long, num is 8 chars long! 8");
+
+        let e = Expander::new("${#num##*[１-６]} ${#nonexistence:-1234${#num}}").unwrap();
+        assert_eq!(e.expand(&mut params).unwrap(), "2 5");
 
         // NOTE: escapes are not consistent with shell
         let e = Expander::new(r#"${nonexistent-\}\${}"#).unwrap();
