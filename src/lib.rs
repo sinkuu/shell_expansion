@@ -87,7 +87,7 @@ enum Format {
     /// If the colon is used, null values are treated as unset.
     /// The same shall apply to bool fields below.
     UseDefaultValue(bool, String, Expander),
-    /// `${parameter=word}`: If `parameter` is unset,
+    /// `${parameter:=word}` or `${parameter=word}`: If `parameter` is unset,
     /// the expansion of `word` is assigned to `parameter`. In all cases
     /// the value of `parameter` is substituted.
     AssignDefaultValue(bool, String, Expander),
