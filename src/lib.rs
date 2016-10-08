@@ -14,7 +14,6 @@
 
 
 use std::collections::HashMap;
-use std::borrow::Cow;
 use std::error::Error;
 use std::fmt;
 
@@ -85,7 +84,7 @@ impl<ArithError: PartialEq> PartialEq for ExpanderError<std::io::Error, ArithErr
 
 
 /// Represents parameter formatting components.
-/// See http://pubs.opengroup.org/onlinepubs/009604499/utilities/xcu_chap02.html#tag_02_06_02
+/// See [Shell Command Language - 2.6.2 Parameter Expansion](http://pubs.opengroup.org/onlinepubs/009604499/utilities/xcu_chap02.html#tag_02_06_02)
 /// for specification. (Note: this library doesn't completely follow the spec for now.)
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum Format {
@@ -221,7 +220,7 @@ impl Expander {
 
                         let v = (&s[0..e]).to_string();
                         if put_len {
-                            fmts.push(Format::StringLength(Box::new(Format::Parameter(v))))
+                            fmts.push(Format::StringLength(Format::Parameter(v).into()))
                         } else {
                             fmts.push(Format::Parameter(v));
                         }
@@ -241,7 +240,7 @@ impl Expander {
         if inner.starts_with('#') {
             let param = &inner[1..];
             Ok(Format::StringLength(
-                Box::new(try!(Expander::parse_brace_pattern(param.to_string())))))
+                try!(Expander::parse_brace_pattern(param.to_string())).into()))
         } else if let Some(after_ident) = after_ident {
             let fs = (&inner[after_ident..]).chars().next().unwrap();
             if [':', '-', '+', '?', '='].contains(&fs) {
@@ -316,9 +315,9 @@ impl Expander {
     }
 
     /// Expands the expansion format string using `params` as parameters.
-    pub fn expand<CmdError, ArithError, S: ShellEnvironment<CmdError, ArithError>>
+    pub fn expand<CmdError, ArithError, E: Environment<CmdError, ArithError>>
         (&self,
-         params: &mut S)
+         params: &mut E)
          -> Result<String, ExpanderError<CmdError, ArithError>> {
         let mut res = String::new();
 
@@ -334,7 +333,7 @@ impl Expander {
 
                 Format::Parameter(ref param) => {
                     if let Some(v) = params.get_parameter(param) {
-                        res.push_str(&v);
+                        res.push_str(v);
                     }
                 }
 
@@ -342,7 +341,7 @@ impl Expander {
                     // FIXME: fix ugly code after non-lexical borrow lands rust
                     if params.has_parameter(param) &&
                        !(treat_null_as_unset && params.get_parameter(param).unwrap().is_empty()) {
-                        res.push_str(&params.get_parameter(param).unwrap());
+                        res.push_str(params.get_parameter(param).unwrap());
                     } else {
                         res.push_str(&try!(default.expand(params)));
                     }
@@ -352,7 +351,7 @@ impl Expander {
                     // FIXME: ditto
                     if params.has_parameter(param) &&
                        !(treat_null_as_unset && params.get_parameter(param).unwrap().is_empty()) {
-                        res.push_str(&params.get_parameter(param).unwrap());
+                        res.push_str(params.get_parameter(param).unwrap());
                     } else {
                         let e = try!(default.expand(params));
                         res.push_str(&e);
@@ -364,7 +363,7 @@ impl Expander {
                     // FIXME: ditto
                     if params.has_parameter(param) &&
                        !(treat_null_as_unset && params.get_parameter(param).unwrap().is_empty()) {
-                        res.push_str(&params.get_parameter(param).unwrap());
+                        res.push_str(params.get_parameter(param).unwrap());
                     } else {
                         let msg = error.clone().map(|e| e.expand(params));
                         let msg = match msg {
@@ -392,7 +391,7 @@ impl Expander {
                     let e = try!(pat.expand(params));
                     if let Some(v) = params.get_parameter(param) {
                         let pat = try!(Pattern::new(&e, len, pos));
-                        if let Some(i) = pat.matches(&v) {
+                        if let Some(i) = pat.matches(v) {
                             match pat.pos {
                                 MatchPosition::Prefix => {
                                     res.push_str(&v[i..]);
@@ -403,7 +402,7 @@ impl Expander {
                                 }
                             }
                         } else {
-                            res.push_str(&v);
+                            res.push_str(v);
                         }
                     }
                 }
@@ -417,6 +416,7 @@ impl Expander {
 /// Special parameters described in
 /// [Shell Command Language - 2.5.2 Special Parameters]
 /// (http://pubs.opengroup.org/onlinepubs/009604499/utilities/xcu_chap02.html#tag_02_05_02)
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SpecialParameter {
     // NOTE: support `${*}`, `${#}` etc. as well
     /// `$*`
@@ -439,25 +439,28 @@ pub enum SpecialParameter {
     Parameter(i32),
 }
 
-pub trait ShellEnvironment<CmdError = std::io::Error, ArithError = ()> {
-    fn get_parameter<'a>(&self, name: &str) -> Option<Cow<'a, str>>;
+pub trait Environment<CmdError = std::io::Error, ArithError = ()> {
+    fn get_parameter(&self, name: &str) -> Option<&str>;
 
-    fn set_parameter<'a>(&mut self, name: String, value: String);
+    fn set_parameter(&mut self, name: String, value: String);
 
-    fn special_parameter<'a>(&self, s: SpecialParameter) -> Option<Cow<'a, str>>;
+    fn special_parameter(&self, s: SpecialParameter) -> Option<String>;
 
-    fn command_substition<'a>(&mut self, command: &str) -> Result<Cow<'a, str>, CmdError>;
+    fn command_substition(&mut self, command: &str) -> Result<String, CmdError>;
 
-    fn arithmetic_expansion<'a>(&mut self, expression: &str) -> Cow<'a, str>;
+    fn arithmetic_expansion(&mut self, expression: &str) -> String;
+
+    fn expand_tilde(&self, name: Option<&str>) -> String;
 
     fn has_parameter(&self, name: &str) -> bool {
         self.get_parameter(name).is_some()
     }
 }
 
-impl ShellEnvironment for HashMap<String, String> {
-    fn get_parameter<'a>(&self, name: &str) -> Option<Cow<'a, str>> {
-        self.get(name).map(|s| s.clone().into())
+impl Environment for HashMap<String, String> {
+    #[inline]
+    fn get_parameter(&self, name: &str) -> Option<&str> {
+        self.get(name).map(String::as_str)
     }
 
     #[inline]
@@ -465,20 +468,28 @@ impl ShellEnvironment for HashMap<String, String> {
         self.contains_key(name)
     }
 
-    fn set_parameter<'a>(&mut self, name: String, value: String) {
+    #[inline]
+    fn set_parameter(&mut self, name: String, value: String) {
         self.insert(name, value);
     }
 
-    fn special_parameter<'a>(&self, _s: SpecialParameter) -> Option<Cow<'a, str>> {
-        unimplemented!();
+    fn expand_tilde(&self, name: Option<&str>) -> String {
+        match name {
+            None => self.get_parameter("HOME").unwrap_or("").to_string(),
+            Some(name) => format!("/home/{}", name),
+        }
     }
 
-    fn command_substition<'a>(&mut self, _command: &str) -> Result<Cow<'a, str>, std::io::Error> {
-        panic!("Command substitution doesn't work with HashMap");
+    fn special_parameter(&self, _s: SpecialParameter) -> Option<String> {
+        panic!("Special parameters don't work with HashMap");
     }
 
-    fn arithmetic_expansion<'a>(&mut self, _expression: &str) -> Cow<'a, str> {
-        panic!("Arithmetic expansion doesn't work with HashMap");
+    fn command_substition(&mut self, _command: &str) -> Result<String, std::io::Error> {
+        panic!("Command substitutions don't work with HashMap");
+    }
+
+    fn arithmetic_expansion(&mut self, _expression: &str) -> String {
+        panic!("Arithmetic expansions doen't work with HashMap");
     }
 }
 
@@ -574,7 +585,6 @@ mod tests {
         assert_eq!(params.get("変数"), Some(&"代入".to_string()));
     }
 
-    // See http://pubs.opengroup.org/onlinepubs/009604499/utilities/xcu_chap02.html#tag_02_06_02
     #[test]
     fn test_null_unset() {
         let mut params = HashMap::new();
